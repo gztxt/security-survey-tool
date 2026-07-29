@@ -1,0 +1,115 @@
+<template>
+  <div class="project-view">
+    <ProjectHeader
+      :project="project"
+      :dirty="isDirty"
+      @save="saveProject"
+      @save-as="saveProjectAs"
+      @export="showExportDialog"
+      @import="importDrawing"
+    />
+
+    <div class="project-layout">
+      <SidebarPanel
+        v-model="activeTab"
+        :collapsible="true"
+        @collapse="onSidebarCollapse"
+      />
+
+      <div class="main-area" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+        <router-view v-slot="{ Component }">
+          <transition name="fade" mode="out-in">
+            <component :is="Component" />
+          </transition>
+        </router-view>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue';
+import { useRouter, useRoute } from 'vue-router';
+import { useProjectStore } from '@/stores/project';
+import { useSettingsStore } from '@/stores/settings';
+import ProjectHeader from '@/components/layout/ProjectHeader.vue';
+import SidebarPanel from '@/components/layout/SidebarPanel.vue';
+
+const router = useRouter();
+const route = useRoute();
+const projectStore = useProjectStore();
+const settingsStore = useSettingsStore();
+
+const project = computed(() => projectStore.currentProject);
+const isDirty = computed(() => projectStore.isDirty);
+const activeTab = ref('devices');
+const sidebarCollapsed = ref(false);
+
+onMounted(() => {
+  // 同步当前图纸
+  if (route.params.drawingId) {
+    projectStore.setCurrentDrawing(route.params.drawingId as string);
+  }
+});
+
+function onSidebarCollapse(collapsed: boolean) {
+  sidebarCollapsed.value = collapsed;
+}
+
+async function saveProject() {
+  if (!project.value) return;
+  await projectStore.saveProject(project.value);
+}
+
+async function saveProjectAs() {
+  if (!project.value) return;
+  const result = await projectStore.saveProjectAs(project.value);
+  if (result?.success && result.path) {
+    router.push({ name: 'project', params: { id: result.path } });
+  }
+}
+
+function showExportDialog() {
+  router.push({ name: 'project-export', params: { id: project.value?.id } });
+}
+
+function importDrawing() {
+  // 触发文件选择对话框
+}
+</script>
+
+<style scoped>
+.project-view {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg-primary);
+}
+
+.project-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.main-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  transition: margin-left 0.2s;
+}
+
+.main-area.sidebar-collapsed {
+  margin-left: -232px; /* 280 - 48 */
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>
