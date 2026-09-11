@@ -153,6 +153,15 @@
       @as-raster="onFallbackRaster"
       @dismiss="baselineImport.dismissFallback()"
     />
+
+    <!-- 多页 PDF 选页（AC-1.3） -->
+    <PdfPagePicker
+      v-if="baselineImport.pdfPagePick.value"
+      :name="basenameOf(baselineImport.pdfPagePick.value.path)"
+      :page-count="baselineImport.pdfPagePick.value.pageCount"
+      @confirm="baselineImport.confirmPdfPage"
+      @dismiss="baselineImport.dismissPdfPick()"
+    />
   </div>
 </template>
 
@@ -167,7 +176,8 @@ import ContextMenu from '@/components/common/ContextMenu.vue';
 import Toolbar from '@/components/common/Toolbar.vue';
 import CalibrationOverlay from '@/components/canvas/CalibrationOverlay.vue';
 import DwgFallbackDialog from '@/components/import/DwgFallbackDialog.vue';
-import { useBaselineImport } from '@/composables/useBaselineImport';
+import PdfPagePicker from '@/components/import/PdfPagePicker.vue';
+import { useBaselineImport, basenameOf } from '@/composables/useBaselineImport';
 import { useCalibration } from '@/composables/useCalibration';
 import type { Point2D } from '@security-survey/shared-types';
 

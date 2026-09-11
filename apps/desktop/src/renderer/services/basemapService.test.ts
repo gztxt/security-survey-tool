@@ -4,7 +4,7 @@
  *  - rasterToEntity / loadImageSize 依赖真实 Image.onload 与 electronAPI，jsdom 下不可靠，故不进单测。
  */
 import { describe, it, expect } from 'vitest';
-import { imageToEntity, attachBasemap, isRaster } from './basemapService';
+import { imageToEntity, attachBasemap, isRaster, isPdf } from './basemapService';
 import type { GraphicEntity } from '@security-survey/shared-types';
 
 describe('basemapService · 位图底图', () => {
@@ -47,5 +47,13 @@ describe('basemapService · 位图底图', () => {
     expect(isRaster('plan.pdf')).toBe(false);
     expect(isRaster('plan.dxf')).toBe(false);
     expect(isRaster('plan')).toBe(false);
+  });
+
+  it('isPdf：仅 pdf 判真，图片与 CAD 判假', () => {
+    expect(isPdf('C:/a/floor.PDF')).toBe(true);
+    expect(isPdf('floor.pdf')).toBe(true);
+    expect(isPdf('floor.png')).toBe(false);
+    expect(isPdf('floor.dxf')).toBe(false);
+    expect(isPdf('floor')).toBe(false);
   });
 });

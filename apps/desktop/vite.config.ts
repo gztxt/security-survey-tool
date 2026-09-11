@@ -102,6 +102,9 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: true,
+    // pdfjs-dist（pdf.worker.min.mjs）含顶层 await，需要 ES2022 目标。
+    // Electron 28 内嵌 Chromium 120，原生支持顶层 await / ES2022，提升目标安全且正确。
+    target: 'es2022',
     // Vite 5 默认 transformMixedEsModules=false：ESM 文件里混用的 require()
     // 不会被 commonjs 插件转换，会原样留在产物中（渲染进程里即为 ReferenceError）。
     // 打开后这些 require 会被转成 import，缺的 Node 内置模块在构建期就会报错暴露，

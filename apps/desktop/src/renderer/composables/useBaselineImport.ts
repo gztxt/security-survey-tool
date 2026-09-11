@@ -16,7 +16,14 @@
 import { ref, readonly } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useProjectStore } from '@/stores/project';
-import { rasterToEntity, attachBasemap, isRaster } from '@/services/basemapService';
+import {
+  rasterToEntity,
+  attachBasemap,
+  isRaster,
+  isPdf,
+  getPdfPageCount,
+  pdfToEntity,
+} from '@/services/basemapService';
 import type { Drawing } from '@security-survey/shared-types';
 
 /** CAD 矢量底图 */
@@ -40,8 +47,15 @@ export interface ImportOutcome {
   rejected: ImportRejected[];
   /** DWG 转换失败或超时，需用户在 DwgFallbackDialog 三选一中决策 */
   dwgFallback: string[];
-  /** 已建记录但位图渲染未就绪（T2 阶段提示文案） */
+  /** 已建记录但位图渲染未就绪（栅格化失败的文件） */
   basemapPending: string[];
+}
+
+/** 多页 PDF 选页上下文（驱动 PdfPagePicker；null = 不显示） */
+export interface PdfPagePick {
+  drawing: Drawing;
+  path: string;
+  pageCount: number;
 }
 
 function extOf(pathOrName: string): string {
@@ -83,6 +97,8 @@ export function useBaselineImport() {
   const importing = ref(false);
   /** 待用户决策的 DWG 文件（驱动 DwgFallbackDialog；空数组即关闭） */
   const fallbackFiles = ref<string[]>([]);
+  /** 待选页的多页 PDF（驱动 PdfPagePicker；null 即关闭，仅处理首个） */
+  const pdfPagePick = ref<PdfPagePick | null>(null);
   /** 注入的适应视图回调（由 DrawingView 提供，避免 composable 直接依赖画布 ref） */
   let fitHandler: (() => void) | null = null;
 
@@ -167,7 +183,8 @@ export function useBaselineImport() {
       outcome.imported.push(...bmResult.imported);
       outcome.rejected.push(...bmResult.rejected);
 
-      // 位图（PNG/JPG/…）→ 栅格化为 BASEMAP 图元；PDF 与栅格化失败的文件进 basemapPending
+      // 位图（PNG/JPG/…）与 PDF → 栅格化为 BASEMAP 图元；栅格化失败的文件进 basemapPending
+      const multiPagePdfs: PdfPagePick[] = [];
       for (const d of bmResult.imported) {
         if (!isRasterFile(d)) continue;
         const path = d.file?.path || d.name;
@@ -178,9 +195,26 @@ export function useBaselineImport() {
           } catch {
             outcome.basemapPending.push(path);
           }
+        } else if (isPdf(path)) {
+          try {
+            const pageCount = await getPdfPageCount(path);
+            // 默认取首页（AC-1.3 第一选项）；多页收集起来供选页
+            const entity = await pdfToEntity(path, 0);
+            attachBasemap(d, entity);
+            if (pageCount > 1) multiPagePdfs.push({ drawing: d, path, pageCount });
+          } catch {
+            outcome.basemapPending.push(path);
+          }
         } else {
-          // PDF：本里程碑尚未栅格化，仅登记记录
           outcome.basemapPending.push(path);
+        }
+      }
+
+      // 多页 PDF：仅为首个弹选页对话框，其余默认首页并提示
+      if (multiPagePdfs.length) {
+        pdfPagePick.value = multiPagePdfs[0];
+        if (multiPagePdfs.length > 1) {
+          ElMessage.info(`其余 ${multiPagePdfs.length - 1} 个多页 PDF 已按首页渲染，可在画布中继续使用`);
         }
       }
 
@@ -246,8 +280,8 @@ export function useBaselineImport() {
     if (outcome.basemapPending.length) {
       ElMessage.info(
         outcome.basemapPending.length === 1
-          ? `「${basenameOf(outcome.basemapPending[0])}」为 PDF 或栅格化失败：已登记记录，位图渲染将在后续里程碑开放`
-          : `${outcome.basemapPending.length} 个底图（PDF / 栅格化失败）已登记，位图渲染将在后续里程碑开放`,
+          ? `「${basenameOf(outcome.basemapPending[0])}」底图栅格化失败：已登记记录，但无法显示位图底图`
+          : `${outcome.basemapPending.length} 个底图栅格化失败，已登记记录`,
       );
     }
     if (outcome.rejected.length) {
@@ -262,6 +296,28 @@ export function useBaselineImport() {
 
   function dismissFallback() {
     fallbackFiles.value = [];
+  }
+
+  /** 关闭 PDF 选页（保持首页底图不变） */
+  function dismissPdfPick() {
+    pdfPagePick.value = null;
+  }
+
+  /** 用户在多页 PDF 对话框选定某页后重栅格化并覆盖底图 */
+  async function confirmPdfPage(pageIndex: number) {
+    const item = pdfPagePick.value;
+    if (!item) return;
+    try {
+      const entity = await pdfToEntity(item.path, pageIndex);
+      attachBasemap(item.drawing, entity);
+      projectStore.markDirty();
+      fitHandler?.();
+      ElMessage.success(`已切换到第 ${pageIndex + 1} 页`);
+    } catch (e) {
+      ElMessage.error(e instanceof Error ? e.message : 'PDF 页面渲染失败');
+    } finally {
+      pdfPagePick.value = null;
+    }
   }
 
   /**
@@ -281,6 +337,7 @@ export function useBaselineImport() {
   return {
     importing: readonly(importing),
     fallbackFiles,
+    pdfPagePick,
     fileInputAccept,
     pickPaths,
     runImport,
@@ -288,6 +345,8 @@ export function useBaselineImport() {
     importFromFiles,
     importDwgAsRaster,
     dismissFallback,
+    dismissPdfPick,
+    confirmPdfPage,
     onFitViewport,
   };
 }
