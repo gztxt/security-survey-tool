@@ -1,9 +1,10 @@
 # 变更清单（baseline-pre-refactor .. HEAD）
 # 列：sha256	状态	任务	文件路径
-# 共 56 个文件
+# 共 57 个文件（含归档清单，供 apply-archive-list.sh）
 
 5fb1ff4269fc33527407624be70d2d57c85902128456b9989041d095296a503e	修改	T4	.gitignore
 4289ecc1185b701816fd8ce62c7038d7cc9781ae92dcdc1319c3218ba29854cf	新增	T5	README.md
+4d694effe1b056fda4b0f0351c823f45d5079ff3045a0969bd5735eae714903c	修改	T1	_archive/pre-refactor-20260911/MANIFEST.sha256
 5ca5d27e96b4cbafe046ed3b0227075adf1338fe28a8c17499695c883d6d2540	修改	T2	apps/desktop/src/env.d.ts
 a5eabb3d6044cc70a0d6fbb40ae0ae0534f8895f3d2a3aec3a25c608f7ad3eb6	修改	T3	apps/desktop/src/main.ts
 b22f0a98be8c6d579ac76d8b85d08e85c53b540234c9356247485cb9fd778d29	修改	T3	apps/desktop/src/preload/index.ts
