@@ -3,16 +3,41 @@
 import { RouterView } from 'vue-router';
 import { useSettingsStore } from '@/stores/settings';
 import { useProjectStore } from '@/stores/project';
+import { useUiStore } from '@/stores/ui';
+import ShepherdTour from '@/components/common/ShepherdTour.vue';
 import { onMounted, onUnmounted } from 'vue';
 
 const settings = useSettingsStore();
 const projectStore = useProjectStore();
+const uiStore = useUiStore();
 
-/**
- * 关窗前脏数据拦截（AC-5.2）。
- * 自动保存已落盘时 isDirty=false，不会打扰用户；
- * 有未保存改动时返回字符串以触发浏览器/Electron 原生确认框。
- */
+/** 新手引导（精简版）：只讲核心闭环，高级功能入口由「高级功能 ▾」菜单承担 */
+const tourSteps: Array<{
+  id: string;
+  title: string;
+  text: string;
+  buttons: Array<{ text: string; action: 'next' | 'back' | 'complete' }>;
+}> = [
+  {
+    id: 'intro',
+    title: '欢迎使用安防勘点设计工具',
+    text: '三步完成一次勘点方案：导入图纸 → 标注设备与走线 → 导出点位图 / DXF。',
+    buttons: [{ text: '下一步', action: 'next' }],
+  },
+  {
+    id: 'import',
+    title: '第一步：导入图纸',
+    text: '点击工具栏「导入底图」或直接拖入 CAD / 图片 / PDF 文件，即可在画布上打开底图。',
+    buttons: [{ text: '上一步', action: 'back' }, { text: '下一步', action: 'next' }],
+  },
+  {
+    id: 'mark',
+    title: '第二步：标注与布线',
+    text: '使用「布点」在图上放置摄像头，用「布线」连接设备与机柜；需要更精准时可先做比例尺校准。',
+    buttons: [{ text: '上一步', action: 'back' }, { text: '完成', action: 'complete' }],
+  },
+];
+
 function onBeforeUnload(e: BeforeUnloadEvent) {
   if (!projectStore.isDirty) return;
   e.preventDefault();
@@ -50,6 +75,14 @@ onUnmounted(() => {
         <span class="dot"></span>
       </div>
     </Teleport>
+
+    <!-- 新手引导（「高级功能 → 重播新手引导」触发） -->
+    <ShepherdTour
+      v-if="uiStore.showTour"
+      :steps="tourSteps"
+      @complete="uiStore.closeTour()"
+      @cancel="uiStore.closeTour()"
+    />
   </div>
 </template>
 

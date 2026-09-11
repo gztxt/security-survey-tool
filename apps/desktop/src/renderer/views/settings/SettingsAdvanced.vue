@@ -1,5 +1,18 @@
 <template>
   <div class="settings-advanced">
+    <div class="setting-group mode-highlight">
+      <div class="mode-switch-row">
+        <div class="mode-switch-text">
+          <h4>显示高级功能（经典模式）</h4>
+          <p class="switch-desc">开启后，工具栏、侧栏面板、设置分类与高级导出将完整显示；关闭即回到精简界面（无需重启）。</p>
+        </div>
+        <el-switch
+          :model-value="settingsStore.advancedMode"
+          @change="onToggleAdvancedMode"
+        />
+      </div>
+    </div>
+
     <div class="setting-group">
       <h4>Python 环境</h4>
 
@@ -362,6 +375,10 @@ const storageSize = ref('计算中...');
 const commonLayers = ['DEFPOINTS', 'VIEWPORT', 'HATCH', 'DIMENSIONS', 'TEXT', '0'];
 const newIgnoredLayer = ref('');
 
+function onToggleAdvancedMode(val: string | number | boolean) {
+  settingsStore.setAdvancedMode(!!val);
+}
+
 function onChange() {
   settingsStore.updateSettings('advanced', model.value);
 }
@@ -503,6 +520,29 @@ onMounted(() => {
 <style scoped>
 .settings-advanced {
   max-width: 800px;
+}
+
+.setting-group.mode-highlight {
+  background: rgba(59, 130, 246, 0.06);
+  border-color: rgba(59, 130, 246, 0.4);
+}
+
+.mode-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mode-switch-row h4 {
+  margin: 0 0 6px;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.mode-switch-text {
+  flex: 1;
+  min-width: 0;
 }
 
 .setting-group {

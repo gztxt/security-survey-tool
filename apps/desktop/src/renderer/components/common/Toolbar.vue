@@ -80,12 +80,12 @@
           <path d="M12 4v16"></path>
         </svg>
       </button>
-      <button class="toolbar-btn" @click="setTool('tray')" :class="{ active: tool === 'tray' }" title="桥架 (T)">
+      <button class="toolbar-btn" @click="setTool('tray')" v-if="showTool('tray')" :class="{ active: tool === 'tray' }" title="桥架 (T)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M4 12h16M4 8h16M4 16h16"></path>
         </svg>
       </button>
-      <button class="toolbar-btn" @click="setTool('well')" :class="{ active: tool === 'well' }" title="弱电井 (Shift+W)">
+      <button class="toolbar-btn" @click="setTool('well')" v-if="showTool('well')" :class="{ active: tool === 'well' }" title="弱电井 (Shift+W)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M12 2v20M17 5H7a2 2 0 0 1-2 2v10a2 2 0 0 1 2 2h10"></path>
         </svg>
@@ -145,7 +145,7 @@
           <rect x="3" y="14" width="7" height="7"></rect>
         </svg>
       </button>
-      <button class="toolbar-btn" @click="toggleRuler" :class="{ active: viewport.showRuler }" title="显示标尺 (R)">
+      <button class="toolbar-btn" @click="toggleRuler" v-if="showTool('ruler')" :class="{ active: viewport.showRuler }" title="显示标尺 (R)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="3" y1="12" x2="21" y2="12"></line>
           <line x1="3" y1="6" x2="3" y2="18"></line>
@@ -188,13 +188,17 @@
 import { ref, computed, watch } from 'vue';
 import { useProjectStore } from '@/stores/project';
 import { useSettingsStore } from '@/stores/settings';
+import { useUiStore } from '@/stores/ui';
+import { useVisibility } from '@/composables/useVisibility';
 import { useRouter } from 'vue-router';
 
 const projectStore = useProjectStore();
 const settingsStore = useSettingsStore();
+const uiStore = useUiStore();
+const { showTool } = useVisibility();
 const router = useRouter();
 
-const tool = ref<'select' | 'pan' | 'device' | 'wire' | 'tray' | 'well'>('select');
+const tool = computed(() => uiStore.activeTool);
 const viewport = ref(projectStore.viewport);
 const snapEnabled = ref(settingsStore.snapEnabled);
 
@@ -211,10 +215,11 @@ const emit = defineEmits<{
 
 watch(() => projectStore.viewport, (v) => { viewport.value = v; });
 watch(() => settingsStore.snapEnabled, (v) => { snapEnabled.value = v; });
+// 工具切换单一出口：无论来自工具栏点击还是「高级功能」菜单，都走 uiStore → emit → 宿主视图
+watch(() => uiStore.activeTool, (t) => { emit('tool-changed', t); });
 
-function setTool(t: typeof tool.value) {
-  tool.value = t;
-  emit('tool-changed', t);
+function setTool(t: 'select' | 'pan' | 'device' | 'wire' | 'tray' | 'well') {
+  uiStore.setTool(t);
 }
 
 function newProject() {

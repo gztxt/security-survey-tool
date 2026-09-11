@@ -23,7 +23,7 @@
       </nav>
     </div>
 
-    <div class="header-center">
+    <div class="header-center" v-if="advancedMode">
       <DrawingTabs
         :drawings="drawings"
         :active-drawing="currentDrawing?.id"
@@ -71,6 +71,8 @@
           </svg>
         </button>
 
+        <AdvancedMenu />
+
         <div class="action-divider"></div>
 
         <button class="icon-btn" @click="toggleSidebar" :title="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
@@ -94,11 +96,16 @@
 import { defineProps, defineEmits, computed, ref } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useProjectStore } from '@/stores/project';
+import { useSettingsStore } from '@/stores/settings';
 import DrawingTabs from './DrawingTabs.vue';
+import AdvancedMenu from '@/components/common/AdvancedMenu.vue';
 
 const projectStore = useProjectStore();
+const settingsStore = useSettingsStore();
 const router = useRouter();
 const route = useRoute();
+
+const advancedMode = computed(() => settingsStore.advancedMode);
 
 const props = defineProps<{
   project: any;

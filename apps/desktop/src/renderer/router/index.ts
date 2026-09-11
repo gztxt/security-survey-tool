@@ -14,7 +14,7 @@ const router = createRouter({
       path: '/projects',
       name: 'Projects',
       component: () => import('@/views/ProjectsView.vue'),
-      meta: { title: '项目列表' },
+      meta: { title: '项目列表', advanced: true, hidden: true },
     },
     {
       path: '/projects/new',
@@ -36,23 +36,24 @@ const router = createRouter({
       meta: { title: '项目编辑', requiresProject: true },
       children: [
         {
+          // 默认子路由：打开项目直接进图纸编辑（架构决策 5.6），不再进概览
           path: '',
+          name: 'project-drawing',
+          component: () => import('@/views/DrawingView.vue'),
+          props: true,
+          meta: { title: '图纸编辑' },
+        },
+        {
+          path: 'dashboard',
           name: 'project-dashboard',
           component: () => import('@/views/DashboardView.vue'),
           meta: { title: '项目概览' },
         },
         {
-          path: '',
+          path: 'dashboard',
           name: 'Dashboard',
           component: () => import('@/views/DashboardView.vue'),
-          meta: { title: '项目概览' },
-        },
-        {
-          path: 'drawing/:drawingId?',
-          name: 'project-drawing',
-          component: () => import('@/views/DrawingView.vue'),
-          props: true,
-          meta: { title: '图纸编辑' },
+          meta: { title: '项目概览', advanced: true, hidden: true },
         },
         {
           path: 'drawing/:drawingId?',
@@ -86,14 +87,14 @@ const router = createRouter({
       path: '/device-library',
       name: 'DeviceLibrary',
       component: () => import('@/views/DeviceLibraryView.vue'),
-      meta: { title: '设备库管理' },
+      meta: { title: '设备库管理', advanced: true, hidden: true },
     },
     {
       // device-library 为历史命名别名
       path: '/device-library',
       name: 'device-library',
       component: () => import('@/views/DeviceLibraryView.vue'),
-      meta: { title: '设备库管理' },
+      meta: { title: '设备库管理', advanced: true, hidden: true },
     },
     {
       path: '/settings',
@@ -111,13 +112,13 @@ const router = createRouter({
       path: '/help',
       name: 'help',
       component: () => import('@/views/HelpView.vue'),
-      meta: { title: '帮助文档' },
+      meta: { title: '帮助文档', advanced: true, hidden: true },
     },
     {
       path: '/help',
       name: 'Help',
       component: () => import('@/views/HelpView.vue'),
-      meta: { title: '帮助文档' },
+      meta: { title: '帮助文档', advanced: true, hidden: true },
     },
     {
       path: '/:pathMatch(.*)*',

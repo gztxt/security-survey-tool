@@ -143,13 +143,13 @@
 
     <!-- 底部信息 -->
     <footer class="footer">
-      <p>安防勘点设计工具 v0.0.1 | 完全开源免费 | <a href="https://github.com" target="_blank">GitHub</a> | <a href="#" @click.prevent="showHelp">帮助文档</a></p>
+      <p>安防勘点设计工具 v0.0.1 | 完全开源免费 | <a href="https://github.com" target="_blank">GitHub</a> | <a v-if="advancedMode" href="#" @click.prevent="showHelp">帮助文档</a></p>
     </footer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useSettingsStore } from '@/stores/settings';
 import { useProjectStore } from '@/stores/project';
@@ -158,6 +158,7 @@ const router = useRouter();
 const settingsStore = useSettingsStore();
 const projectStore = useProjectStore();
 
+const advancedMode = computed(() => settingsStore.advancedMode);
 const recentProjects = ref<any[]>([]);
 
 onMounted(() => {

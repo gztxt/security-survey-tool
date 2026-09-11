@@ -11,7 +11,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const defaultScale = ref(100);
   const unit = ref<'mm' | 'cm' | 'm'>('m');
   const showGrid = ref(true);
-  const showRuler = ref(true);
+  const showRuler = ref(false);
   const canvasBackground = ref('#FAFAFA');
   /**
    * 专家（高级）模式：默认关闭（决策 1）。
@@ -172,7 +172,7 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultScale.value = 100;
     unit.value = 'm';
     showGrid.value = true;
-    showRuler.value = true;
+    showRuler.value = false;
     canvasBackground.value = '#FAFAFA';
     save();
   }

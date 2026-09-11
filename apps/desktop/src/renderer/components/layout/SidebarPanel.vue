@@ -4,7 +4,7 @@
     <!-- 面板切换标签 -->
     <div class="sidebar-tabs">
       <button
-        v-for="tab in tabs"
+        v-for="tab in visibleTabs"
         :key="tab.id"
         class="tab-btn"
         :class="{ active: activeTab === tab.id }"
@@ -41,9 +41,11 @@ import LayerManagerPanel from '@/components/project/LayerManagerPanel.vue';
 import PropertyPanel from '@/components/project/PropertyPanel.vue';
 import ProjectTreePanel from '@/components/project/ProjectTreePanel.vue';
 import WiringPanel from '@/components/wiring/WiringPanel.vue';
+import { useUiStore } from '@/stores/ui';
+import { useVisibility, type PanelId } from '@/composables/useVisibility';
 
 const props = defineProps<{
-  modelValue: string;
+  modelValue?: string;
   collapsible?: boolean;
 }>();
 
@@ -52,8 +54,15 @@ const emit = defineEmits<{
   collapse: [collapsed: boolean];
 }>();
 
+const uiStore = useUiStore();
+const { showPanel } = useVisibility();
+
 const isCollapsed = ref(false);
-const activeTab = ref(props.modelValue || 'devices');
+// 激活 Tab 以 uiStore 为单一事实源（「高级功能」菜单切面板与此互通）
+const activeTab = computed({
+  get: () => uiStore.activeSidebarTab,
+  set: (v: string) => uiStore.setSidebarTab(v),
+});
 
 const tabs = [
   { id: 'devices', title: '设备库', icon: 'DeviceIcon' },
@@ -62,6 +71,11 @@ const tabs = [
   { id: 'wiring', title: '布线', icon: 'WiringIcon' },
   { id: 'properties', title: '属性', icon: 'PropertiesIcon' },
 ];
+
+// 精简态只露「设备库」；「高级功能」菜单切到某面板后，该面板临时可见（真实可达）
+const visibleTabs = computed(() =>
+  tabs.filter(t => showPanel(t.id as PanelId) || activeTab.value === t.id),
+);
 
 const panelComponents = {
   devices: DeviceLibraryPanel,

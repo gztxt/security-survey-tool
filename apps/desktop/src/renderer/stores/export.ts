@@ -229,7 +229,15 @@ export const useExportStore = defineStore('export', () => {
         drawingIds: opts.drawingIds?.length
           ? opts.drawingIds
           : (opts.project.drawings || []).map(d => d.id),
-        dxfLayers: opts.layers || { devices: true, cables: true, trays: true, wells: true, texts: true },
+        // 五个图层开关默认全开；调用方只传部分键时，缺失键按 true 补齐（契约测试锁定）
+        dxfLayers: {
+          devices: true,
+          cables: true,
+          trays: true,
+          wells: true,
+          texts: true,
+          ...(opts.layers || {}),
+        },
         autoSave: false,            // 由渲染进程统一走 saveFiles 的保存框，避免双弹框
       });
       if (res?.errors?.length) errors.push(...res.errors);

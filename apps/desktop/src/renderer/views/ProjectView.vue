@@ -11,7 +11,6 @@
 
     <div class="project-layout">
       <SidebarPanel
-        v-model="activeTab"
         :collapsible="true"
         @collapse="onSidebarCollapse"
       />
@@ -44,7 +43,6 @@ const baselineImport = useBaselineImport();
 
 const project = computed(() => projectStore.currentProject);
 const isDirty = computed(() => projectStore.isDirty);
-const activeTab = ref('devices');
 const sidebarCollapsed = ref(false);
 
 onMounted(() => {

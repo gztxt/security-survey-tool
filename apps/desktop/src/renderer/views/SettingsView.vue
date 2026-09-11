@@ -9,12 +9,12 @@
       <!-- 侧边分类导航 -->
       <nav class="settings-nav" aria-label="设置分类">
         <div
-          v-for="category in categories"
+          v-for="category in visibleCategories"
           :key="category.id"
           class="nav-category"
         >
           <div
-            v-if="category.id !== 'divider'"
+            v-if="category.id !== 'divider' && category.id !== 'divider2'"
             class="nav-item"
             :class="{ active: activeCategory === category.id }"
             @click="activeCategory = category.id"
@@ -78,7 +78,9 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
+import { useRoute } from 'vue-router';
 import { useSettingsStore } from '@/stores/settings';
+import { useVisibility, type SettingsCategoryId } from '@/composables/useVisibility';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 import SettingsGeneral from './settings/SettingsGeneral.vue';
@@ -92,6 +94,8 @@ import SettingsAdvanced from './settings/SettingsAdvanced.vue';
 import SettingsAbout from './settings/SettingsAbout.vue';
 
 const settingsStore = useSettingsStore();
+const route = useRoute();
+const { showSettingsCategory } = useVisibility();
 
 const props = defineProps<{}>();
 const emit = defineEmits<{ close: [] }>();
@@ -115,6 +119,11 @@ const categories = [
   { id: 'advanced', label: '高级', icon: 'SettingsAdvancedIcon' },
   { id: 'about', label: '关于', icon: 'SettingsAboutIcon' },
 ];
+
+// 精简态只露「通用 / 高级 / 关于」（useVisibility 单一事实源，决策 5.4）
+const visibleCategories = computed(() =>
+  categories.filter(c => showSettingsCategory(c.id as SettingsCategoryId)),
+);
 
 const settings = computed(() => ({
   general: settingsStore.generalSettings,
@@ -168,10 +177,19 @@ const SettingsAboutIcon = {
 onMounted(() => {
   // 保存原始设置用于取消
   originalSettings.value = JSON.parse(JSON.stringify(settings.value));
-  // 恢复上次选中的分类
-  const lastCategory = localStorage.getItem('settings-last-category');
-  if (lastCategory && categories.some(c => c.id === lastCategory)) {
-    activeCategory.value = lastCategory;
+  // 优先：?cat= 直达（「高级功能 → 专业设置」跳转）
+  const qCat = route.query.cat as string | undefined;
+  if (qCat && visibleCategories.value.some(c => c.id === qCat)) {
+    activeCategory.value = qCat;
+  } else {
+    // 恢复上次选中的分类（仅在当前可见范围内）
+    const lastCategory = localStorage.getItem('settings-last-category');
+    if (lastCategory && visibleCategories.value.some(c => c.id === lastCategory)) {
+      activeCategory.value = lastCategory;
+    } else if (!visibleCategories.value.some(c => c.id === activeCategory.value)) {
+      // 上次选中的分类在精简态被隐藏 → 回退到「通用」
+      activeCategory.value = 'general';
+    }
   }
   // 键盘导航
   window.addEventListener('keydown', handleKeydown);
@@ -222,7 +240,7 @@ function resetAllSettings() {
 function handleKeydown(e: KeyboardEvent) {
   if (e.ctrlKey || e.metaKey) return;
 
-  const categoryIds = categories.filter(c => c.id !== 'divider' && c.id !== 'divider2').map(c => c.id);
+  const categoryIds = visibleCategories.value.filter(c => c.id !== 'divider' && c.id !== 'divider2').map(c => c.id);
   const currentIndex = categoryIds.indexOf(activeCategory.value);
 
   switch (e.key) {

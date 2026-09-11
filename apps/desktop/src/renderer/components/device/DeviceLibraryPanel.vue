@@ -11,21 +11,21 @@
           v-model="searchQuery"
           @input="setSearchQuery"
         />
-        <button class="icon-btn" @click="showImportDialog = true" title="导入设备库">
+        <button v-if="advancedMode" class="icon-btn" @click="showImportDialog = true" title="导入设备库">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="17 8 12 3 7 8"/>
             <line x1="12" y1="3" x2="12" y2="15"/>
           </svg>
         </button>
-        <button class="icon-btn" @click="showExportDialog = true" title="导出设备库">
+        <button v-if="advancedMode" class="icon-btn" @click="showExportDialog = true" title="导出设备库">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
         </button>
-        <button class="icon-btn" @click="showAddDeviceDialog = true" title="添加自定义设备">
+        <button v-if="advancedMode" class="icon-btn" @click="showAddDeviceDialog = true" title="添加自定义设备">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="12" y1="5" x2="12" y2="19"/>
             <line x1="5" y1="12" x2="19" y2="12"/>
@@ -164,8 +164,10 @@ import { BUILTIN_DEVICES } from '@security-survey/device-lib';
 import DeviceIcon from './DeviceIcon.vue';
 import Dialog from '@/components/common/Dialog.vue';
 import DeviceForm from './DeviceForm.vue';
+import { useVisibility } from '@/composables/useVisibility';
 
 const store = useDeviceLibraryStore();
+const { advancedMode, isCommonDevice } = useVisibility();
 
 const props = defineProps<{
   width?: number;
@@ -192,8 +194,15 @@ const builtinModels = computed(() => BUILTIN_DEVICES);
 const allDevices = computed(() => [...BUILTIN_DEVICES, ...customDevices.value]);
 const categories = computed(() => ['all', ...store.categories]);
 
+// 精简态只列常用设备（摄像头 / 枪机 / 半球 / 球机 / 机柜），全量走经典模式（决策 5.5）
+const baseDevices = computed(() => {
+  const all = allDevices.value;
+  if (advancedMode.value) return all;
+  return all.filter(d => isCommonDevice(d.name) || isCommonDevice(d.type) || isCommonDevice(d.vendor));
+});
+
 const filteredDevices = computed(() => {
-  let result = allDevices.value;
+  let result = baseDevices.value;
 
   if (selectedCategory.value !== 'all') {
     result = result.filter(d => d.category === selectedCategory.value);
