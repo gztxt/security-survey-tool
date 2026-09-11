@@ -47,8 +47,11 @@ pnpm --filter @security-survey/exporter exec vitest run  # 单测（含 dxf-writ
 - 项目文件扩展名统一为 `.survey`（JSON，主进程 `project:save` 写盘）。
 - **向后兼容承诺**：本次收敛重构不新增必填字段、不改变已有字段语义；
   旧 `.survey`（含历史 `.ssproj` 文件，经"所有文件"过滤器）可原样打开。
-- 位图底图以 `entities` 中 `type:'IMAGE'` 合成实体承载，且 **base64 不落入 `.survey`**
-  （走 userData/cache 引用 + `file.path` 重链接），避免工程文件体积暴涨。
+- **位图底图**以 `entities` 中 `type:'IMAGE'`（`layer:'BASEMAP'`）合成实体承载：
+  会话内以 dataURL 内联渲染；**保存时剥离 dataURL、仅保留 `sourcePath`/`pageIndex`/尺寸引用**，
+  避免 `.survey` 体积暴涨（决策 3.3）。打开项目时按 `sourcePath` 重新栅格化（重水合）；
+  原图缺失则提示"底图文件已移动，请重新链接"，标注数据不受影响。
+- **PDF 底图**经 pdfjs-dist 栅格化（scale=2），多页 PDF 默认取首页并弹选页对话框（AC-1.3）。
 - `knownPath`（当前项目文件路径）只存在于渲染进程 store 状态，绝不写入 payload。
 
 ## DWG / DXF 能力边界（诚实声明）
@@ -59,6 +62,8 @@ pnpm --filter @security-survey/exporter exec vitest run  # 单测（含 dxf-writ
   三选一降级引导（另存 DXF 指引 / 作为图片底图 / 安装 ODA）。
 - **产品内不宣传"DWG 转换"为默认可用能力**；界面文案统一"导出 DXF"
   （在 CAD 软件中打开 DXF 后可另存为 DWG）。DWG 直接回写明确不做。
+- **DXF 导出的底图边界**：底图为图片/PDF 时，导出的 DXF 只含矢量标注层（`SS-*`），
+  不含底图；导出前 UI 会明确告知，需在 CAD 中 XATTACH 原图叠加（AC-7.4）。
 - `docx` 导出为类型预留、未实现，UI 标注"即将上线"。
 
 ## 待收敛事项
