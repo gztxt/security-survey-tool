@@ -228,6 +228,8 @@ export class Exporter {
   private deviceModels: Map<string, DeviceModel> = new Map();
   /** 渲染进程提供的画布快照 dataURL（drawingId -> data:image/png;base64,...） */
   private snapshots: Record<string, string> = {};
+  /** 位图底图缓存（imagePath -> HTMLImageElement），DOM 导出路径重绘 IMAGE 图元前预加载 */
+  private imageCache: Map<string, HTMLImageElement> = new Map();
 
   constructor(project: Project, deviceModels: DeviceModel[] = []) {
     this.project = project;
@@ -523,6 +525,9 @@ export class Exporter {
     ctx.scale(scale, scale);
     ctx.translate(-bounds.minX, -bounds.minY);
 
+    // 0) 预加载位图底图（IMAGE 图元），保证重绘时同步可用
+    await this.preloadImages(drawing.entities);
+
     // 1) 绘制 CAD 背景
     this.drawCadEntities(ctx, drawing.entities, drawing.layers);
 
@@ -568,6 +573,31 @@ export class Exporter {
     }
   }
 
+  /** 预加载 IMAGE 图元的位图资源（DOM 导出路径在重绘前调用，等待全部就绪） */
+  private async preloadImages(entities: GraphicEntity[]): Promise<void> {
+    const srcs = new Set<string>();
+    for (const e of entities) {
+      if (e.type !== 'IMAGE') continue;
+      const src = (e.data as any)?.imagePath as string | undefined;
+      if (src && !this.imageCache.has(src)) srcs.add(src);
+    }
+    if (!srcs.size) return;
+    await Promise.all(Array.from(srcs).map(src => this.loadImage(src)));
+  }
+
+  /** 加载单张位图并入缓存；失败仅告警不阻断（底图缺失时其余标注照常导出） */
+  private loadImage(src: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        this.imageCache.set(src, img);
+        resolve(img);
+      };
+      img.onerror = () => reject(new Error('底图加载失败'));
+      img.src = src;
+    });
+  }
+
   private drawEntityGeometry(ctx: CanvasRenderingContext2D, entity: GraphicEntity): void {
     const data = entity.data as any;
     ctx.beginPath();
@@ -603,6 +633,21 @@ export class Exporter {
         ctx.textBaseline = data.vAlign;
         ctx.fillText(data.text, data.position.x, data.position.y);
         break;
+      case 'IMAGE': {
+        const img = this.imageCache.get(data.imagePath as string);
+        if (!img || img.naturalWidth === 0) break;
+        ctx.save();
+        const rotation = Number(data.rotation) || 0;
+        if (rotation) {
+          ctx.translate(data.position.x, data.position.y);
+          ctx.rotate((rotation * Math.PI) / 180);
+          ctx.drawImage(img, 0, 0, data.size.width, data.size.height);
+        } else {
+          ctx.drawImage(img, data.position.x, data.position.y, data.size.width, data.size.height);
+        }
+        ctx.restore();
+        break;
+      }
       // 其他类型简化处理...
     }
   }
@@ -766,6 +811,9 @@ export class Exporter {
 
     ctx.scale(scale, scale);
     ctx.translate(-bounds.minX, -bounds.minY);
+
+    // 0) 预加载位图底图（IMAGE 图元），保证淡化重绘时同步可用
+    await this.preloadImages(drawing.entities);
 
     // 背景：淡化 CAD 图元
     ctx.globalAlpha = 0.3;

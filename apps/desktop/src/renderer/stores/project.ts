@@ -2,6 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import type { Project, Drawing, DeviceInstance, Cable, CableType, WeakPoint, CableTray, ViewportState, CalibrationData, Point2D } from '@security-survey/shared-types';
+import { rehydrateBasemapEntity } from '@/services/basemapService';
 
 export const useProjectStore = defineStore('project', () => {
   // 状态
@@ -30,6 +31,8 @@ export const useProjectStore = defineStore('project', () => {
   const maxHistorySize = 50;
   /** 图纸画布快照缓存（drawingId -> dataURL），供主进程导出引擎使用 */
   const drawingSnapshots = ref<Record<string, string>>({});
+  /** 打开项目时重水合失败的底图源文件路径（"底图文件已移动"提示用） */
+  const basemapMissing = ref<string[]>([]);
 
   // 计算属性
   const currentDrawing = computed(() => {
@@ -66,10 +69,36 @@ export const useProjectStore = defineStore('project', () => {
     const data = await window.api.fs.readFile(projectId);
     if (!data) throw new Error('无法读取项目文件: ' + projectId);
     const project = JSON.parse(data) as Project;
+    // 打开前先重水合被剥离的位图底图（AC-5：dataURL 不落 .survey，按 sourcePath 重新栅格化）
+    basemapMissing.value = await rehydrateBasemaps(project);
     setProject(project);
     projectFilePath.value = projectId;
     persistPathMapping(project.id, projectId);
     return project;
+  }
+
+  /**
+   * 重水合项目内所有底图图元（imagePath 为空、但有 sourcePath 的 IMAGE）。
+   * 返回源文件缺失/栅格化失败的路径列表（供 UI 提示"底图文件已移动"）。
+   */
+  async function rehydrateBasemaps(project: Project): Promise<string[]> {
+    const missing: string[] = [];
+    for (const d of project.drawings || []) {
+      for (const e of d.entities || []) {
+        const entity = e as any;
+        if (!entity || entity.type !== 'IMAGE') continue;
+        const data = entity.data || {};
+        if (data.imagePath) continue; // 已内联，无需重水合
+        const src = data.sourcePath as string | undefined;
+        if (!src) continue;
+        try {
+          await rehydrateBasemapEntity(entity);
+        } catch {
+          missing.push(src);
+        }
+      }
+    }
+    return missing;
   }
 
   /** 桥可用性探测（纯浏览器 / 单元测试环境为 false，保存链应降级而不是抛错） */
@@ -89,7 +118,14 @@ export const useProjectStore = defineStore('project', () => {
     for (const d of clone.drawings || []) {
       if (d.file) delete d.file.dataBase64;
       for (const e of d.entities || []) {
-        if (e && typeof e === 'object') delete (e as any).imageData;
+        if (e && typeof e === 'object') {
+          delete (e as any).imageData;
+          // 位图底图：剥离 dataURL（决策 3.3 体积治理），仅保留 sourcePath/pageIndex/size 引用，
+          // 打开项目时按 sourcePath 重新栅格化（AC-5）。
+          if ((e as any).type === 'IMAGE' && (e as any).data) {
+            (e as any).data.imagePath = '';
+          }
+        }
       }
     }
     return clone as Project;
@@ -365,6 +401,7 @@ export const useProjectStore = defineStore('project', () => {
     isDirty.value = false;
     projectFilePath.value = null;
     lastSaveError.value = null;
+    basemapMissing.value = [];
     history.value = [];
     historyIndex.value = -1;
   }
@@ -605,6 +642,7 @@ export const useProjectStore = defineStore('project', () => {
     history,
     historyIndex,
     drawingSnapshots,
+    basemapMissing,
     currentDrawing,
     projectDevices,
     projectCables,
@@ -614,6 +652,7 @@ export const useProjectStore = defineStore('project', () => {
     clearProject,
     setDrawingSnapshot,
     loadProject,
+    rehydrateBasemaps,
     saveProject,
     saveProjectAs,
     hasBridge,

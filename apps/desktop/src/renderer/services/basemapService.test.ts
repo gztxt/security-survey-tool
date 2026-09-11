@@ -56,4 +56,14 @@ describe('basemapService · 位图底图', () => {
     expect(isPdf('floor.dxf')).toBe(false);
     expect(isPdf('floor')).toBe(false);
   });
+
+  it('imageToEntity：meta 记录 sourcePath / pageIndex（供保存剥离后重水合）', () => {
+    const e = imageToEntity('data:image/png;base64,X', 100, 200, { sourcePath: 'C:/a/plan.pdf', pageIndex: 2 });
+    expect((e.data as any).sourcePath).toBe('C:/a/plan.pdf');
+    expect((e.data as any).pageIndex).toBe(2);
+    expect((e.data as any).imagePath).toBe('data:image/png;base64,X');
+    // 未传 meta 时不产生多余字段
+    const e2 = imageToEntity('data:image/png;base64,Y', 10, 10);
+    expect((e2.data as any).sourcePath).toBeUndefined();
+  });
 });

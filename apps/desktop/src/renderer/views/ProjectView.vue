@@ -27,13 +27,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
+import { ElMessage } from 'element-plus';
 import { useProjectStore } from '@/stores/project';
 import { useSettingsStore } from '@/stores/settings';
 import ProjectHeader from '@/components/layout/ProjectHeader.vue';
 import SidebarPanel from '@/components/layout/SidebarPanel.vue';
-import { useBaselineImport } from '@/composables/useBaselineImport';
+import { useBaselineImport, basenameOf } from '@/composables/useBaselineImport';
 
 const router = useRouter();
 const route = useRoute();
@@ -50,7 +51,25 @@ onMounted(() => {
   if (route.params.drawingId) {
     projectStore.setCurrentDrawing(route.params.drawingId as string);
   }
+  // 打开项目时底图重水合失败 → 提示"底图文件已移动"（AC-5）
+  if (projectStore.basemapMissing.length) promptMissingBasemap();
 });
+
+watch(
+  () => projectStore.basemapMissing,
+  (list) => {
+    if (list.length) promptMissingBasemap();
+  },
+);
+
+function promptMissingBasemap() {
+  const list = projectStore.basemapMissing;
+  ElMessage.warning(
+    list.length === 1
+      ? `底图文件已移动，请重新链接：${basenameOf(list[0])}（标注数据已保留）`
+      : `${list.length} 个底图文件已移动，请重新链接（标注数据已保留）`,
+  );
+}
 
 function onSidebarCollapse(collapsed: boolean) {
   sidebarCollapsed.value = collapsed;

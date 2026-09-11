@@ -212,4 +212,40 @@ describe('project store · saveProject 契约', () => {
     expect(res3.success).toBe(true);
     expect(save3.mock.calls[0][1]).toBe('C:/tmp/mapped.survey');
   });
+
+  it('④ 位图底图：保存剥离 dataURL（imagePath 清空）但保留 sourcePath 引用（决策 3.3 体积治理）', async () => {
+    const store = useProjectStore();
+    const project = makeProject();
+    // 注入一条真实的 IMAGE 底图图元：imagePath 内联 dataURL，sourcePath 记录来源
+    project.drawings[0].entities = [
+      {
+        id: 'basemap-1',
+        type: 'IMAGE',
+        layer: 'BASEMAP',
+        color: 256,
+        lineType: 'CONTINUOUS',
+        lineWeight: 0,
+        visible: true,
+        data: {
+          position: { x: 0, y: 0 },
+          size: { width: 800, height: 600 },
+          rotation: 0,
+          imagePath: 'data:image/png;base64,AAAA',
+          sourcePath: 'C:/tmp/plan.png',
+        },
+        bounds: { minX: 0, minY: 0, maxX: 800, maxY: 600, width: 800, height: 600 },
+      },
+    ] as any;
+    store.setProject(project);
+    const { save } = installBridge({});
+
+    await store.saveProject();
+
+    const payload = save.mock.calls[0][0];
+    const entity = payload.drawings[0].entities[0];
+    expect(entity.type).toBe('IMAGE');
+    expect(entity.data.imagePath).toBe('');                 // dataURL 必须被剥离
+    expect(entity.data.sourcePath).toBe('C:/tmp/plan.png'); // 来源引用必须保留
+    expect(JSON.stringify(payload)).not.toContain('data:image/png;base64');
+  });
 });

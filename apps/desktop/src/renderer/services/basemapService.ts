@@ -72,9 +72,26 @@ export function loadImageSize(dataUrl: string): Promise<{ width: number; height:
 
 let seq = 0;
 
-/** 把 dataURL 包装成 BASEMAP 图元（左上角对齐原点，模型坐标单位 = 像素） */
-export function imageToEntity(dataUrl: string, width: number, height: number): GraphicEntity {
+/**
+ * 把 dataURL 包装成 BASEMAP 图元（左上角对齐原点，模型坐标单位 = 像素）。
+ * meta 记录来源信息（sourcePath / pageIndex），保存时仅保留 meta 而剔除 dataURL，
+ * 打开项目时按 sourcePath 重栅格化（决策 3.3 的体积治理 + AC-5 重开闭环）。
+ */
+export function imageToEntity(
+  dataUrl: string,
+  width: number,
+  height: number,
+  meta?: { sourcePath?: string; pageIndex?: number },
+): GraphicEntity {
   seq += 1;
+  const data: any = {
+    position: { x: 0, y: 0 },
+    size: { width, height },
+    rotation: 0,
+    imagePath: dataUrl,
+  };
+  if (meta?.sourcePath) data.sourcePath = meta.sourcePath;
+  if (typeof meta?.pageIndex === 'number') data.pageIndex = meta.pageIndex;
   return {
     id: `basemap-${Date.now()}-${seq}`,
     type: 'IMAGE',
@@ -83,12 +100,7 @@ export function imageToEntity(dataUrl: string, width: number, height: number): G
     lineType: 'CONTINUOUS',
     lineWeight: 0,
     visible: true,
-    data: {
-      position: { x: 0, y: 0 },
-      size: { width, height },
-      rotation: 0,
-      imagePath: dataUrl,
-    },
+    data,
     bounds: { minX: 0, minY: 0, maxX: width, maxY: height, width, height },
   } as GraphicEntity;
 }
@@ -97,7 +109,7 @@ export function imageToEntity(dataUrl: string, width: number, height: number): G
 export async function rasterToEntity(path: string): Promise<GraphicEntity> {
   const dataUrl = await readAsDataUrl(path);
   const { width, height } = await loadImageSize(dataUrl);
-  return imageToEntity(dataUrl, width, height);
+  return imageToEntity(dataUrl, width, height, { sourcePath: path });
 }
 
 /** 把底图图元挂到图纸上：加入 entities 并确保存在 BASEMAP 图层 */
@@ -187,5 +199,22 @@ export async function pdfPageToDataUrl(
 /** PDF 路径 → 底图图元（渲染指定页，默认首页） */
 export async function pdfToEntity(path: string, pageIndex = 0): Promise<GraphicEntity> {
   const { dataUrl, width, height } = await pdfPageToDataUrl(path, pageIndex);
-  return imageToEntity(dataUrl, width, height);
+  return imageToEntity(dataUrl, width, height, { sourcePath: path, pageIndex });
+}
+
+/**
+ * 重水合：按底图图元上记录的 sourcePath（+ pageIndex）重新栅格化，回填 imagePath 与尺寸。
+ * 用于打开项目时恢复被保存流程剥离的 dataURL（AC-5）。返回是否成功。
+ */
+export async function rehydrateBasemapEntity(entity: GraphicEntity): Promise<boolean> {
+  const d = (entity.data as any) || {};
+  const src = d.sourcePath as string | undefined;
+  if (!src) return false;
+  const pageIndex = typeof d.pageIndex === 'number' ? d.pageIndex : 0;
+  const rebuilt = isPdf(src) ? await pdfToEntity(src, pageIndex) : await rasterToEntity(src);
+  d.imagePath = (rebuilt.data as any).imagePath;
+  d.size = (rebuilt.data as any).size;
+  d.position = (rebuilt.data as any).position;
+  entity.bounds = rebuilt.bounds;
+  return true;
 }
