@@ -1,0 +1,13 @@
+# 行尾规范
+# 背景：本机 core.autocrlf=true 且此前无 .gitattributes，`git archive` 会把 LF blob 转成 CRLF，
+#       污染 NAS 交付包（main.ts 35493→36482 字节，sha256 失配）。
+# 显式锁定关键文件类型的行尾，杜绝复发。
+#
+# 规则：
+#   *.sh      LF    shell 脚本须在 Linux NAS 以 LF 执行
+#   *.ps1     CRLF  Windows PowerShell 5.1 需要（且 UTF-8 带 BOM）
+#   *.bat/cmd CRLF  cmd.exe 需要 CRLF（中文用 GBK 编码）
+*.sh   text eol=lf
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
