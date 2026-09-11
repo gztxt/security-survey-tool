@@ -40,7 +40,7 @@
             <h4>导出内容</h4>
             <div class="export-types">
               <label
-                v-for="type in exportTypes"
+                v-for="type in visibleExportTypes"
                 :key="type.id"
                 class="export-type-item"
                 :class="{ selected: exportConfig.types.includes(type.id) }"
@@ -65,10 +65,21 @@
             <h4>输出格式</h4>
             <div class="format-options">
               <el-radio-group v-model="exportConfig.format" size="small">
-                <el-radio-button :label="fmt.value" v-for="fmt in outputFormats" :key="fmt.value">
-                  {{ fmt.label }}
-                </el-radio-button>
+                <el-tooltip
+                  v-for="fmt in outputFormats"
+                  :key="fmt.value"
+                  :content="fmt.tip"
+                  :disabled="!fmt.tip"
+                  placement="top"
+                >
+                  <el-radio-button :label="fmt.value" :disabled="fmt.disabled">
+                    {{ fmt.label }}
+                  </el-radio-button>
+                </el-tooltip>
               </el-radio-group>
+              <p v-if="formatUnsupportedNote(exportConfig.format)" class="format-note">
+                {{ formatUnsupportedNote(exportConfig.format) }}
+              </p>
             </div>
           </div>
 
@@ -349,9 +360,11 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Loading, Warning, Document, CircleCheck, CircleClose } from '@element-plus/icons-vue';
 import { useProjectStore } from '@/stores/project';
 import { useExportStore } from '@/stores/export';
+import { useSettingsStore } from '@/stores/settings';
 
 const projectStore = useProjectStore();
 const exportStore = useExportStore();
+const settingsStore = useSettingsStore();
 
 // 同步主进程导出进度
 watch(
@@ -377,6 +390,7 @@ const previewData = ref<any>(null);
 const activeOptions = ref<string[]>(['pointmap']);
 
 // 导出类型定义
+// ★ AC-7.2：DXF 的文案严格写「导出 DXF」，禁写"导出 CAD"（与 AC-2.4 诚实声明红线同源）
 const exportTypes = [
   {
     id: 'pointmap',
@@ -385,6 +399,16 @@ const exportTypes = [
     icon: 'PointMapIcon',
     color: '#3b82f6',
     disabled: false,
+    advanced: false,
+  },
+  {
+    id: 'dxf',
+    name: '导出 DXF',
+    description: '在 CAD 软件中打开 DXF 后可另存为 DWG；仅含标注图层（SS-* 前缀）',
+    icon: 'Document',
+    color: '#0ea5e9',
+    disabled: false,
+    advanced: false,
   },
   {
     id: 'topology',
@@ -393,6 +417,7 @@ const exportTypes = [
     icon: 'TopologyIcon',
     color: '#10b981',
     disabled: false,
+    advanced: true,
   },
   {
     id: 'fov',
@@ -401,6 +426,7 @@ const exportTypes = [
     icon: 'FovIcon',
     color: '#f59e0b',
     disabled: false,
+    advanced: true,
   },
   {
     id: 'bom',
@@ -409,6 +435,7 @@ const exportTypes = [
     icon: 'BomIcon',
     color: '#8b5cf6',
     disabled: false,
+    advanced: true,
   },
   {
     id: 'report',
@@ -417,16 +444,39 @@ const exportTypes = [
     icon: 'ReportIcon',
     color: '#ef4444',
     disabled: false,
+    advanced: true,
   },
 ];
 
+/**
+ * 输出格式（AC-7.2 / AC-7.3）
+ * - dxf：正常露出，label 严格"导出 DXF"，tooltip 说明"在 CAD 软件中打开 DXF 后可另存为 DWG"
+ * - docx：按钮保留但 disabled + 后缀"（即将上线）" —— 不静默缺失
+ * - dwg：不在格式组出现（属导入侧概念）；历史数据里若出现则同样提示"即将上线"
+ */
 const outputFormats = [
-  { value: 'pdf', label: 'PDF' },
-  { value: 'png', label: 'PNG' },
-  { value: 'jpg', label: 'JPG' },
-  { value: 'xlsx', label: 'Excel' },
-  { value: 'docx', label: 'Word' },
+  { value: 'pdf', label: 'PDF', disabled: false, tip: '' },
+  { value: 'png', label: 'PNG', disabled: false, tip: '' },
+  { value: 'jpg', label: 'JPG', disabled: false, tip: '' },
+  { value: 'xlsx', label: 'Excel', disabled: false, tip: '' },
+  { value: 'dxf', label: '导出 DXF', disabled: false, tip: '在 CAD 软件中打开 DXF 后可另存为 DWG' },
+  { value: 'docx', label: 'Word（即将上线）', disabled: true, tip: 'Word 报告导出尚未实现，敬请期待' },
 ];
+
+/** 精简态只暴露点位图 + DXF（架构决策 5.4），其余专业导出走"高级功能" */
+const visibleExportTypes = computed(() =>
+  exportTypes.filter(t => !t.advanced || settingsStore.advancedMode),
+);
+
+/** 历史配置里可能残留未实现格式（如 dwg/docx），此处按 AC-7.3 统一给出提示 */
+function formatUnsupportedNote(fmt: string): string {
+  return fmt === 'dwg' || fmt === 'docx' ? '该格式即将上线，本次不会生成文件' : '';
+}
+
+/** AC-7.4：判断所选图纸里是否存在位图/PDF 底图（DXF 无法内嵌位图，须事先告知） */
+function hasRasterBasemap(project: { drawings?: any[] }): boolean {
+  return (project.drawings || []).some(d => ['png', 'jpg', 'jpeg', 'pdf'].includes(String(d?.file?.format || '').toLowerCase()));
+}
 
 const exportConfig = ref({
   project: {
@@ -535,7 +585,7 @@ async function updatePreview() {
   }
 }
 
-function startExport() {
+async function startExport() {
   const project = projectStore.currentProject;
   if (!project) {
     ElMessage.warning('请先打开一个项目再导出');
@@ -544,6 +594,20 @@ function startExport() {
   if (exportConfig.value.types.length === 0) {
     ElMessage.warning('请至少选择一项导出内容');
     return;
+  }
+
+  // AC-7.4：底图为位图/PDF 时导出前必须告知"DXF 只含矢量标注图层，不含底图"
+  if (exportConfig.value.types.includes('dxf') && hasRasterBasemap(project)) {
+    try {
+      await ElMessageBox.confirm(
+        '当前项目底图为图片 / PDF。导出的 DXF 只包含矢量标注图层（SS-DEVICE / SS-CABLE 等 7 个 SS-* 图层），'
+        + '不含底图本身；请在 CAD 中以 XATTACH 方式附上原图，或直接按同名坐标叠加。',
+        '关于 DXF 导出的底图',
+        { confirmButtonText: '继续导出', cancelButtonText: '返回调整', type: 'info' },
+      );
+    } catch {
+      return;   // 用户选择返回调整：不改配置、不导出
+    }
   }
 
   exporting.value = true;
@@ -854,6 +918,12 @@ watch(exportConfig, (val) => {
 
 .format-options {
   width: 100%;
+}
+
+.format-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #d97706;
 }
 
 .detail-options {

@@ -5,7 +5,8 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import type { Project } from '@security-survey/shared-types';
 
-export type ExportTypeId = 'pointmap' | 'fov' | 'topology' | 'bom' | 'report';
+/** 'dxf' = CAD 标注 overlay（T3 新增能力） */
+export type ExportTypeId = 'pointmap' | 'fov' | 'topology' | 'bom' | 'report' | 'dxf';
 
 export interface ExportTaskFile {
   path: string;
@@ -65,6 +66,9 @@ export const useExportStore = defineStore('export', () => {
       deviceList: types.includes('bom'),
       cableList: types.includes('bom'), // BOM 含线缆清单
       report: types.includes('report'),
+      // DXF overlay 扩展位：ExportInclude 类型不改（历史 .survey 里的 include 形状不能变），
+      // exporter 侧以 (options.include as any).dxfOverlay 读取
+      dxfOverlay: types.includes('dxf'),
     };
   }
 
@@ -76,10 +80,14 @@ export const useExportStore = defineStore('export', () => {
     canvasSnapshots?: Record<string, string>;
   }) {
     const drawingIds = (opts.project.drawings || []).map((d) => d.id);
+    const formats: string[] = [opts.format];
+    // 勾选了 DXF 内容项就必须让 formats 含 'dxf'，否则 exporter 的
+    // `formats.includes('dxf')` 前置条件会把产物静默丢掉（AC-7.3 禁静默缺失）
+    if (opts.types.includes('dxf') && !formats.includes('dxf')) formats.push('dxf');
     return {
       project: opts.project,
       drawingIds,
-      formats: [opts.format],
+      formats,
       resolution: opts.dpi || 300,
       outputDir: '',
       include: buildInclude(opts.types),
@@ -114,6 +122,26 @@ export const useExportStore = defineStore('export', () => {
     const api = window.api.export;
 
     const steps: { id: ExportTypeId; label: string; call: () => Promise<ExportTaskResult> }[] = [];
+    if (opts.types.includes('dxf')) {
+      // DXF overlay：主进程直调（纯文本无需 canvas，不经 120s 渲染进程握手）
+      steps.push({
+        id: 'dxf',
+        label: '导出 DXF',
+        call: async () => {
+          const res: any = await window.api.export.dxf({
+            project: opts.project,
+            drawingIds: (opts.project.drawings || []).map((d) => d.id),
+            dxfLayers: (opts as any).dxfLayers || { devices: true, cables: true, trays: true, wells: true, texts: true },
+            autoSave: false,
+          });
+          return {
+            success: !!res?.success,
+            files: (res?.files || []) as ExportTaskFile[],
+            errors: (res?.errors || []) as string[],
+          };
+        },
+      });
+    }
     if (opts.types.includes('pointmap')) {
       steps.push({ id: 'pointmap', label: '点位图', call: () => api.pointMap(options) });
     }
@@ -177,6 +205,62 @@ export const useExportStore = defineStore('export', () => {
   }
 
   /**
+   * DXF overlay 导出（架构决策 2 / 5.4）
+   * 走主进程直调路径 window.api.export.dxf —— 不经 delegateExportToRenderer，
+   * 纯文本无需 canvas，也就没有 120s 往返超时。
+   * 默认只输出点位/设备相关图层（AC-7.1：新手主流程不需要桥架/弱电井也能用）。
+   */
+  async function runDxfExport(opts: {
+    project: Project;
+    drawingIds?: string[];
+    layers?: { devices?: boolean; cables?: boolean; trays?: boolean; wells?: boolean; texts?: boolean };
+    projectName?: string;
+  }): Promise<ExportTaskResult> {
+    if (exporting.value) {
+      return { success: false, files: [], errors: ['已有导出任务进行中'] };
+    }
+    exporting.value = true;
+    currentStep.value = '正在生成 DXF…';
+    const errors: string[] = [];
+    const files: ExportTaskFile[] = [];
+    try {
+      const res: any = await window.api.export.dxf({
+        project: opts.project,
+        drawingIds: opts.drawingIds?.length
+          ? opts.drawingIds
+          : (opts.project.drawings || []).map(d => d.id),
+        dxfLayers: opts.layers || { devices: true, cables: true, trays: true, wells: true, texts: true },
+        autoSave: false,            // 由渲染进程统一走 saveFiles 的保存框，避免双弹框
+      });
+      if (res?.errors?.length) errors.push(...res.errors);
+      files.push(...(res?.files || []));
+      if (!res?.files?.length && !res?.errors?.length) errors.push('DXF 导出未产出文件');
+      if (files.length) {
+        const saved = await saveFiles(files);
+        if (!saved.length && !errors.length) errors.push('DXF 保存被取消');
+      }
+    } catch (err: any) {
+      errors.push(`DXF: ${err?.message || String(err)}`);
+    }
+
+    const result: ExportTaskResult = { success: errors.length === 0, files, errors };
+    lastResult.value = result;
+    history.value.unshift({
+      id: Date.now().toString(),
+      name: opts.projectName || opts.project.name || 'DXF 导出',
+      types: ['dxf'] as any,
+      format: 'dxf',
+      time: new Date().toISOString(),
+      fileCount: files.length,
+      success: result.success,
+    });
+    persistHistory();
+    exporting.value = false;
+    currentStep.value = '';
+    return result;
+  }
+
+  /**
    * 把导出文件落盘（base64 -> 文件）
    * 返回实际保存路径列表
    */
@@ -186,6 +270,9 @@ export const useExportStore = defineStore('export', () => {
       if (!file.dataBase64) continue;
       const target = await window.api.fs.showSaveDialog({
         defaultPath: file.path,
+        filters: file.path.endsWith('.dxf')
+          ? [{ name: 'DXF 图形交换格式', extensions: ['dxf'] }]
+          : undefined,
       });
       if (!target || target.canceled) continue;
       const filePath = typeof target === 'string' ? target : target.filePath;
@@ -217,6 +304,7 @@ export const useExportStore = defineStore('export', () => {
     isIdle,
     // actions
     runExport,
+    runDxfExport,
     saveFiles,
     clearHistory,
     removeHistoryItem,

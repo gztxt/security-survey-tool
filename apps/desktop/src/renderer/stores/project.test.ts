@@ -43,7 +43,7 @@ function makeDrawing(id: string): Drawing {
       thumbnailPath: '',
     } as Drawing['file'],
     calibration: makeCalibration(),
-    layers: [{ name: '0', color: 7, visible: true, locked: false }],
+    layers: [{ name: '0', color: 7, visible: true, locked: false, lineType: 'CONTINUOUS', lineWeight: 0.25 }],
     // 运行期内嵌的位图内容：必须在落盘前被剔除
     entities: [
       { type: 'LINE', layer: 'BASEMAP', start: { x: 0, y: 0 }, end: { x: 10, y: 10 } },

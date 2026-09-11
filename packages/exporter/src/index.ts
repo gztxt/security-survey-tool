@@ -29,6 +29,18 @@ import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import PDFKit from 'pdfkit';
 import Handlebars from 'handlebars';
 import JSZip from 'jszip';
+import {
+  writeDxf,
+  dxfLayerPlanFor,
+  DXF_LAYER_DEVICE,
+  DXF_LAYER_DEVICE_TEXT,
+  DXF_LAYER_CABLE,
+  DXF_LAYER_TRAY,
+  DXF_LAYER_WELL,
+  DXF_LAYER_RACK,
+  DXF_LAYER_BLOCK_DEV,
+} from './dxf-writer';
+import type { DxfBlockDef, DxfDoc, DxfEntity, DxfIncludeFlags } from './dxf-writer';
 
 // ============ 常量 ============
 
@@ -38,6 +50,39 @@ const A4_WIDTH_MM = 210;
 const A4_HEIGHT_MM = 297;
 const A0_WIDTH_MM = 841;
 const A0_HEIGHT_MM = 1189;
+
+/**
+ * DXF overlay 的 include 扩展位。
+ * 铁律：不改 ExportInclude 类型（历史 .survey 里存的 include 对象形状不能变），
+ * 因此以 `as any` 读取该扩展位 —— 老数据没有该键时视为 false（不会凭空多出 DXF 产物）。
+ */
+export const INCLUDE_DXF_OVERLAY = 'dxfOverlay';
+
+/** 设备符号半径（模型单位 mm）：设备库无尺寸信息时的兜底 */
+const DXF_DEVICE_RADIUS_MM = 250;
+/** 点位编号字高（mm） */
+const DXF_TEXT_HEIGHT_MM = 200;
+/** 弱电井围合半宽/半高（mm） */
+const DXF_WELL_HALF = 500;
+
+/** DXF overlay 的分层勾选（缺省全开） */
+export interface DxfOverlayFlags {
+  devices?: boolean;
+  cables?: boolean;
+  trays?: boolean;
+  wells?: boolean;
+  texts?: boolean;
+}
+
+/** DXF 导出请求：ExportOptions 的可扩展形态（仅运行期 IPC 载荷，不进 .survey） */
+export interface DxfExportOptions extends Partial<ExportOptions> {
+  drawingIds: string[];
+  /** overlay 分层勾选；缺省全部输出 */
+  dxfLayers?: DxfOverlayFlags;
+  /** 项目数据（主进程直调场景：无法从 this.project 取得时显式传入） */
+  project?: Project;
+}
+
 
 // ============ 同构字节工具（渲染进程/主进程 Node 环境通用）============
 
@@ -262,12 +307,192 @@ export class Exporter {
         files.push(zipFile);
       }
 
+      // 7. DXF overlay（新建能力：CAD 可编辑标注层，纯文本无需 canvas）
+      if ((options.include as any)?.[INCLUDE_DXF_OVERLAY] && options.formats.includes('dxf')) {
+        const f = await this.exportDxfOverlay(options);
+        if (f) files.push(f);
+      }
+
       return { success: true, files, errors };
     } catch (error) {
       errors.push(error instanceof Error ? error.message : '导出失败');
       return { success: false, files, errors };
     }
   }
+
+  // ============ 7. DXF overlay 导出 ============
+
+  /**
+   * 生成 DXF R12 ASCII 并包成 ExportFile。
+   * 注意：多张图纸合并进同一个 overlay 文档（同一坐标系，CAD 侧按 SS-* 图层过滤即可），
+   * 因此文件名以项目名而非图纸名为准。
+   */
+  async exportDxfOverlay(options: DxfExportOptions): Promise<ExportFile | null> {
+    const ids = (options.drawingIds || []).filter(id => this.drawings.has(id));
+    if (!ids.length) return null;
+    const text = this.exportDxfText(options);
+    const bytes = new TextEncoder().encode(text);
+    return {
+      path: `${this.sanitizeFilename(this.project?.name || 'survey')}_标注overlay.dxf`,
+      format: 'dxf',
+      size: bytes.length,
+      drawingId: ids[0],
+      dataBase64: bytesToBase64(bytes),
+    };
+  }
+
+  /** DXF R12 ASCII 全文（UTF-8）——单测与调试入口 */
+  exportDxfText(options: DxfExportOptions): string {
+    if (options.project) {
+      // 主进程直调：本次请求自带项目数据，用它刷新内部索引，避免 stale 引用
+      this.project = options.project;
+      this.drawings = new Map();
+      for (const d of options.project.drawings || []) this.drawings.set(d.id, d);
+    }
+    const ids = (options.drawingIds || []).filter(id => this.drawings.has(id));
+    if (!ids.length) throw new Error('DXF 导出失败：所选图纸不存在');
+
+    const inc: DxfIncludeFlags = {
+      devices: options.dxfLayers?.devices !== false,
+      cables: options.dxfLayers?.cables !== false,
+      trays: options.dxfLayers?.trays !== false,
+      wells: options.dxfLayers?.wells !== false,
+      texts: options.dxfLayers?.texts !== false,
+    };
+
+    const layers = dxfLayerPlanFor(inc);
+    const entities: DxfEntity[] = [];
+    const blocks: DxfBlockDef[] = [];
+    for (const id of ids) {
+      const doc = this.buildDxfDoc(this.drawings.get(id)!, inc);
+      entities.push(...doc.entities);
+      for (const b of doc.blocks || []) {
+        if (!blocks.some(x => x.name === b.name)) blocks.push(b);
+      }
+    }
+    // 未勾选的类别：图层保留（冻结），实体直接不输出
+    return writeDxf({ layers, blocks: inc.devices ? blocks : [], entities, flipY: true });
+  }
+
+  /**
+   * 单张图纸 → DXF 文档片段（不含图幅翻转，由 writeDxf 统一处理）
+   * - devices：CIRCLE 符号 + 朝向 LINE + 点位编号 TEXT + INSERT(块)
+   * - cables ：path 折线逐段 LINE（R12 无 LWPOLYLINE）
+   * - trays ：逐段 LINE；wells：4 段 LINE 围合 + 名称 TEXT
+   * 块定义：每个型号一个 SSB-<modelId>，被 INSERT 引用（零孤儿：引用前必须先定义）
+   */
+  buildDxfDoc(drawing: Drawing, inc: DxfIncludeFlags = {
+    devices: true, cables: true, trays: true, wells: true, texts: true,
+  }): DxfDoc {
+    const entities: DxfEntity[] = [];
+    const blocks: DxfBlockDef[] = [];
+    const devices = drawing.devices || [];
+    const wiring = drawing.wiring || ({ weakPoints: [], trays: [], cables: [] } as any);
+
+    if (inc.devices) {
+      const modelIds = new Set(devices.map(d => d.modelId));
+      for (const modelId of modelIds) {
+        blocks.push({
+          name: `SSB-${modelId}`,
+          basePoint: { x: 0, y: 0 },
+          entities: [
+            { type: 'CIRCLE', center: { x: 0, y: 0 }, radius: DXF_DEVICE_RADIUS_MM, layer: DXF_LAYER_BLOCK_DEV, color: 5 },
+            { type: 'LINE', start: { x: 0, y: 0 }, end: { x: DXF_DEVICE_RADIUS_MM * 1.5, y: 0 }, layer: DXF_LAYER_BLOCK_DEV, color: 5 },
+          ],
+        });
+      }
+      for (const dev of devices) {
+        // 朝向角：DeviceInstance.rotation 是弧度（0=向右，顺时针）；DXF 的 50 组码为角度且逆时针
+        const angleDeg = -((dev.rotation || 0) * 180 / Math.PI);
+        entities.push({
+          type: 'INSERT', block: `SSB-${dev.modelId}`, position: dev.position,
+          scale: { x: 1, y: 1 }, rotation: angleDeg, layer: DXF_LAYER_DEVICE, color: 5,
+        });
+        entities.push({
+          type: 'LINE', start: dev.position,
+          end: {
+            x: dev.position.x + Math.cos(dev.rotation || 0) * DXF_DEVICE_RADIUS_MM * 2,
+            y: dev.position.y + Math.sin(dev.rotation || 0) * DXF_DEVICE_RADIUS_MM * 2,
+          },
+          layer: DXF_LAYER_DEVICE, color: 5,
+        });
+        if (inc.texts && dev.label) {
+          entities.push({
+            type: 'TEXT', position: { x: dev.position.x + DXF_DEVICE_RADIUS_MM, y: dev.position.y - DXF_DEVICE_RADIUS_MM },
+            height: DXF_TEXT_HEIGHT_MM, text: dev.label, layer: DXF_LAYER_DEVICE_TEXT, color: 7,
+          });
+        }
+      }
+      // 机柜类设备额外落到 SS-RACK，便于 CAD 侧单独开关
+      for (const dev of devices) {
+        if (this.isRackModel(dev.modelId)) {
+          entities.push({
+            type: 'TEXT', position: { x: dev.position.x - DXF_DEVICE_RADIUS_MM, y: dev.position.y + DXF_DEVICE_RADIUS_MM },
+            height: DXF_TEXT_HEIGHT_MM, text: `机柜 ${dev.label || dev.modelId}`, layer: DXF_LAYER_RACK, color: 2,
+          });
+        }
+      }
+    }
+
+    if (inc.cables) {
+      for (const cable of wiring.cables || []) {
+        for (let i = 1; i < (cable.path || []).length; i++) {
+          entities.push({ type: 'LINE', start: cable.path[i - 1], end: cable.path[i], layer: DXF_LAYER_CABLE, color: 3 });
+        }
+        if (inc.texts && cable.label) {
+          const mid = (cable.path || [])[Math.floor((cable.path.length || 1) / 2)] || { x: 0, y: 0 };
+          entities.push({
+            type: 'TEXT', position: { x: mid.x, y: mid.y }, height: DXF_TEXT_HEIGHT_MM * 0.8,
+            text: cable.label, layer: DXF_LAYER_CABLE, color: 3,
+          });
+        }
+      }
+    }
+
+    if (inc.trays) {
+      for (const tray of wiring.trays || []) {
+        for (let i = 1; i < (tray.path || []).length; i++) {
+          entities.push({ type: 'LINE', start: tray.path[i - 1], end: tray.path[i], layer: DXF_LAYER_TRAY, color: 8 });
+        }
+      }
+    }
+
+    if (inc.wells) {
+      for (const well of wiring.weakPoints || []) {
+        const { x, y } = well.position;
+        const corners = [
+          { x: x - DXF_WELL_HALF, y: y - DXF_WELL_HALF },
+          { x: x + DXF_WELL_HALF, y: y - DXF_WELL_HALF },
+          { x: x + DXF_WELL_HALF, y: y + DXF_WELL_HALF },
+          { x: x - DXF_WELL_HALF, y: y + DXF_WELL_HALF },
+        ];
+        for (let i = 0; i < corners.length; i++) {
+          entities.push({
+            type: 'LINE', start: corners[i], end: corners[(i + 1) % corners.length],
+            layer: DXF_LAYER_WELL, color: 6,
+          });
+        }
+        if (inc.texts && well.name) {
+          entities.push({
+            type: 'TEXT', position: { x: x - DXF_WELL_HALF, y: y + DXF_WELL_HALF + DXF_TEXT_HEIGHT_MM },
+            height: DXF_TEXT_HEIGHT_MM, text: well.name, layer: DXF_LAYER_WELL, color: 6,
+          });
+        }
+      }
+    }
+
+    return { layers: dxfLayerPlanFor(inc), blocks, entities, flipY: true };
+  }
+
+  /** 是否机柜类型号（按 category / 名称启发式判定，命中则额外落到 SS-RACK） */
+  private isRackModel(modelId: string): boolean {
+    const model = this.deviceModels.get(modelId);
+    if (!model) return false;
+    const cat = String((model as any).category || '');
+    const name = String((model as any).name || '');
+    return cat === 'other' && /机柜|rack|42U|网络柜/i.test(name);
+  }
+
 
   // ============ 1. 点位图导出 ============
 

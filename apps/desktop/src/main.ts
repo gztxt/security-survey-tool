@@ -21,6 +21,9 @@ import { fileURLToPath } from 'url';
 import { DeviceLibrary, BUILTIN_DEVICES } from '@security-survey/device-lib';
 import type { DeviceModel, ExportInclude, Project } from '@security-survey/shared-types';
 import { cadParser } from '@security-survey/cad-parser';
+// 导出引擎只在 export:dxf 时按需 dynamic import：它会连带加载 pdfkit/xlsx/pdf-lib 等
+// 重型 CJS 依赖，静态引入会拖慢主进程启动（甚至复现"双击无反应"类故障）。
+import type { Exporter as ExporterType } from '@security-survey/exporter';
 
 // 主进程产物是 ESM（Electron 28 原生支持），没有 CommonJS 的 __dirname。
 // 直接用 __dirname 会得到 undefined，导致 path.join(__dirname, ...) 抛 TypeError，
@@ -124,8 +127,8 @@ function getOdaConverterPath(): string {
 
 // ============ 窗口管理 ============
 
-let mainWindow: BrowserWindow | null = null;
-let splashWindow: BrowserWindow | null = null;
+let mainWindow: InstanceType<typeof BrowserWindow> | null = null;
+let splashWindow: InstanceType<typeof BrowserWindow> | null = null;
 
 function createSplashWindow(): void {
   splashWindow = new BrowserWindow({
@@ -425,6 +428,41 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('export:report', async (_, options: any) => {
     return await delegateExportToRenderer('export:report', options);
+  });
+
+  /**
+   * DXF overlay 导出（架构决策 2）：纯文本、不需要 canvas，
+   * 故**不走** delegateExportToRenderer（那条 120s 往返握手），直接在主进程
+   * new Exporter(project, models).exportDxfOverlay()，再复用 export:saveFile 的写盘逻辑。
+   * 少一层异步握手 = 少一类时序 bug。
+   */
+  ipcMain.handle('export:dxf', async (_, options: any) => {
+    const project: Project | null = options?.project || null;
+    if (!project) return { success: false, files: [], errors: ['DXF 导出缺少项目数据'] };
+    try {
+      const { Exporter: ExporterCtor } = await import('@security-survey/exporter');
+      const exporter: ExporterType = new ExporterCtor(project, getDeviceLibraryInstance().getAll());
+      const file = await exporter.exportDxfOverlay({
+        drawingIds: Array.isArray(options.drawingIds) && options.drawingIds.length
+          ? options.drawingIds
+          : (project.drawings || []).map(d => d.id),
+        dxfLayers: options.dxfLayers || undefined,
+        project,
+      });
+      if (!file) return { success: false, files: [], errors: ['没有可导出的图纸'] };
+      const files = [file];
+      // 未指定落盘路径时直接弹保存框（与 export:saveFile 同一交互）
+      if (options?.autoSave !== false) {
+        const saved = await saveExportFile(file.path, file.dataBase64 || '');
+        if (!saved.success) {
+          return { success: false, files, errors: [saved.error || '保存被取消'] };
+        }
+        return { success: true, files: [{ ...file, path: saved.path }], errors: [], canceled: !!saved.canceled };
+      }
+      return { success: true, files, errors: [] };
+    } catch (e) {
+      return { success: false, files: [], errors: [e instanceof Error ? e.message : String(e)] };
+    }
   });
 
   // --- 设备库 ---
@@ -853,12 +891,25 @@ function delegateExportToRenderer(channel: string, options: any): Promise<any> {
 
 // 渲染进程请求文件保存对话框
 ipcMain.handle('export:saveFile', async (_, fileName: string, dataBase64: string) => {
+  const res = await saveExportFile(fileName, dataBase64);
+  if (res.canceled) return { success: false, canceled: true };
+  return res.success ? { success: true, path: res.path } : { success: false, error: res.error };
+});
+
+/**
+ * 弹出保存框并写盘（export:saveFile 与 export:dxf 共用）。
+ * 返回体保留 canceled / error 细节，供上层区分"用户取消"与"真失败"。
+ */
+async function saveExportFile(
+  fileName: string,
+  dataBase64: string,
+): Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }> {
   const result = await dialog.showSaveDialog(mainWindow!, {
     title: '保存导出文件',
     defaultPath: fileName,
     filters: [{ name: 'All Files', extensions: ['*'] }],
   });
-  if (result.canceled || !result.filePath) return { success: false };
+  if (result.canceled || !result.filePath) return { success: false, canceled: true };
   try {
     const buffer = Buffer.from(dataBase64, 'base64');
     writeFileSync(result.filePath, buffer);
@@ -866,7 +917,7 @@ ipcMain.handle('export:saveFile', async (_, fileName: string, dataBase64: string
   } catch (e) {
     return { success: false, error: String(e) };
   }
-});
+}
 
 // ============ 设备库（接入 @security-survey/device-lib）============
 

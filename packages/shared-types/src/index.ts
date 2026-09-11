@@ -430,7 +430,27 @@ export interface ExportOptions {
   canvasSnapshots?: Record<string, string>;
 }
 
+/**
+ * 导出格式联合。
+ * ★ 收敛说明（AC-7.1~7.3）：成员一律**不删除** —— 历史 .survey 里可能存有
+ *   format:'dwg' / 'docx' 的导出记录，删成员会让旧文件 TS 直接报错。
+ *   "支持与否"改由下面的 SUPPORTED / UNSUPPORTED 常量表达，UI 据此显示
+ *   "即将上线"而非静默缺失。
+ */
 export type ExportFormat = 'png' | 'jpg' | 'pdf' | 'xlsx' | 'docx' | 'dwg' | 'dxf' | 'csv' | 'svg' | 'zip';
+
+/** 已实现、可勾选的导出格式 */
+export const SUPPORTED_EXPORT_FORMATS = ['png', 'jpg', 'pdf', 'svg', 'xlsx', 'csv', 'zip', 'dxf'] as const;
+
+/**
+ * 未实现的导出格式（保留类型成员以兼容历史数据）
+ * @deprecated 未实现，UI 须显示"即将上线"，不得静默缺失
+ */
+export const UNSUPPORTED_EXPORT_FORMATS = ['dwg', 'docx'] as const;
+
+/** DXF overlay 的 include 扩展位键名（不进 ExportInclude 类型，见 exporter 侧注释） */
+export const INCLUDE_DXF_OVERLAY_KEY = 'dxfOverlay';
+
 
 export interface ExportInclude {
   pointMap: boolean;           // 点位图

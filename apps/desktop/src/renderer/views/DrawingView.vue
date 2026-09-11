@@ -40,11 +40,11 @@
 
       <!-- 比例尺校准浮层（决策 5.2 / AC-3.1） -->
       <CalibrationOverlay
-        v-if="cal.active && activeDrawing"
-        :step="cal.step"
-        :hint="cal.hint"
+        v-if="calActive && activeDrawing"
+        :step="calStep"
+        :hint="calHint"
         :points="calPoints"
-        :preview-distance="cal.previewDistance"
+        :preview-distance="calPreviewDistance"
         :to-model="canvasToModel"
         :to-screen="canvasToScreen"
         @pick="onCalPick"
@@ -179,6 +179,12 @@ const settingsStore = useSettingsStore();
 const baselineImport = useBaselineImport();
 /** 比例尺校准链 */
 const cal = useCalibration();
+// 模板解包：composable 返回的是普通对象内的 ref，模板不会自动解包嵌套 ref，
+// 需显式 computed 取值（同时避免 v-if="cal.active" 恒真的问题）
+const calActive = computed(() => cal.active.value);
+const calStep = computed(() => cal.step.value);
+const calHint = computed(() => cal.hint.value);
+const calPreviewDistance = computed(() => cal.previewDistance.value);
 
 const props = defineProps<{
   projectId?: string;

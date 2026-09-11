@@ -315,11 +315,5 @@ const api = {
 // 能力，避免任何一侧回归失败。
 contextBridge.exposeInMainWorld('api', api);
 contextBridge.exposeInMainWorld('electronAPI', api);
-
-// 类型声明
-declare global {
-  interface Window {
-    electronAPI: typeof api;
-    api: typeof api;
-  }
-}
+// 注：Window.api / Window.electronAPI 的全局类型已在 src/env.d.ts 声明（SecuritySurveyApi），
+// 此处不再重复 declare global，避免与 env.d.ts 的接口合并产生类型冲突。
