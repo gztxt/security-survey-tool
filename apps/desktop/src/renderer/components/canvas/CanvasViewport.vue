@@ -262,6 +262,16 @@ function setupRenderer() {
   renderer.value.setWeakPoints(wells.value);
   renderer.value.setCableTrays(trays.value);
 
+  // 位图底图：把 IMAGE 图元的 dataURL 预注册到渲染缓存（图片 onload 后由 60fps 渲染循环自动绘制）
+  for (const entity of entities.value) {
+    if (entity.type === 'IMAGE') {
+      const imgData = entity.data as any;
+      if (imgData?.imagePath) {
+        renderer.value!.registerImage(imgData.imagePath, imgData.imagePath);
+      }
+    }
+  }
+
   // 图层可见性
   for (const layer of layers.value) {
     renderer.value!.setLayerVisibility(layer.name, layer.visible);

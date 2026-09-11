@@ -897,8 +897,9 @@ export class CadRenderer {
     const wellId = this.pickWeakPoint(modelPos, tolerance);
     if (wellId) return `well:${wellId}`;
 
-    // 再拾取 CAD 图元
+    // 再拾取 CAD 图元（跳过 BASEMAP 底图，避免误选误操作，AC-1.4）
     for (const entity of this.entities) {
+      if (entity.layer === 'BASEMAP') continue;
       if (this.entityHitTest(entity, modelPos, tolerance)) {
         return `entity:${entity.id}`;
       }

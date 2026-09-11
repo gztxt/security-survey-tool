@@ -16,6 +16,7 @@
 import { ref, readonly } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useProjectStore } from '@/stores/project';
+import { rasterToEntity, attachBasemap, isRaster } from '@/services/basemapService';
 import type { Drawing } from '@security-survey/shared-types';
 
 /** CAD 矢量底图 */
@@ -165,7 +166,23 @@ export function useBaselineImport() {
       const bmResult = await importViaMain(basemap);
       outcome.imported.push(...bmResult.imported);
       outcome.rejected.push(...bmResult.rejected);
-      outcome.basemapPending.push(...bmResult.imported.filter(d => isRasterFile(d)).map(d => d.file?.path || d.name));
+
+      // 位图（PNG/JPG/…）→ 栅格化为 BASEMAP 图元；PDF 与栅格化失败的文件进 basemapPending
+      for (const d of bmResult.imported) {
+        if (!isRasterFile(d)) continue;
+        const path = d.file?.path || d.name;
+        if (isRaster(path)) {
+          try {
+            const entity = await rasterToEntity(path);
+            attachBasemap(d, entity);
+          } catch {
+            outcome.basemapPending.push(path);
+          }
+        } else {
+          // PDF：本里程碑尚未栅格化，仅登记记录
+          outcome.basemapPending.push(path);
+        }
+      }
 
       finishImport(outcome);
       if (outcome.dwgFallback.length) fallbackFiles.value = outcome.dwgFallback.slice();
@@ -227,7 +244,11 @@ export function useBaselineImport() {
       ElMessage.success(`已导入 ${outcome.imported.length} 个底图`);
     }
     if (outcome.basemapPending.length) {
-      ElMessage.info('位图底图已登记，位图渲染开发中（下一里程碑开放）');
+      ElMessage.info(
+        outcome.basemapPending.length === 1
+          ? `「${basenameOf(outcome.basemapPending[0])}」为 PDF 或栅格化失败：已登记记录，位图渲染将在后续里程碑开放`
+          : `${outcome.basemapPending.length} 个底图（PDF / 栅格化失败）已登记，位图渲染将在后续里程碑开放`,
+      );
     }
     if (outcome.rejected.length) {
       const first = outcome.rejected[0];
