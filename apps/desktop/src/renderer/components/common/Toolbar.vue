@@ -15,11 +15,14 @@
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
         </svg>
       </button>
-      <button class="toolbar-btn" @click="saveProject" title="保存项目 (Ctrl+S)" :disabled="!projectStore.isDirty">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <button class="toolbar-btn" @click="saveProject" title="保存项目 (Ctrl+S)" :disabled="!projectStore.isDirty || projectStore.saving">
+        <svg v-if="!projectStore.saving" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
           <polyline points="17 21 17 13 7 13 7 21"></polyline>
           <polyline points="7 3 7 8 15 8"></polyline>
+        </svg>
+        <svg v-else class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12a9 9 0 1 1-6.2-8.6"></path>
         </svg>
       </button>
     </div>
@@ -27,7 +30,7 @@
     <div class="toolbar-divider"></div>
 
     <div class="toolbar-group">
-      <button class="toolbar-btn" @click="importDrawing" title="导入图纸 (Ctrl+I)">
+      <button class="toolbar-btn" @click="importDrawing" title="导入底图（DXF/DWG/图片/PDF）">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
           <polyline points="17 8 12 3 7 8"></polyline>
@@ -198,6 +201,12 @@ const snapEnabled = ref(settingsStore.snapEnabled);
 const emit = defineEmits<{
   'tool-changed': [tool: typeof tool.value];
   'viewport-changed': [viewport: any];
+  /** 导入底图（由宿主视图转交 useBaselineImport，避免工具栏持有文件/桥逻辑） */
+  'import': [];
+  /** 进入/退出比例尺校准（宿主视图切换 CalibrationOverlay） */
+  'calibrate': [];
+  /** 保存项目（宿主视图调 projectStore.saveProject） */
+  'save': [];
 }>();
 
 watch(() => projectStore.viewport, (v) => { viewport.value = v; });
@@ -216,17 +225,21 @@ function openProject() {
   router.push({ name: 'home' }); // 打开项目选择器
 }
 
-function saveProject() {
-  // 触发保存
-  projectStore.markClean();
+/** 保存：委托 store（内部走主进程 project:save，见决策 4）。不再伪造 markClean */
+async function saveProject() {
+  if (!projectStore.currentProject) return;
+  if (projectStore.saving) return;
+  await projectStore.saveProject();
 }
 
+/** 导入底图：宿主视图（DrawingView）持有 useBaselineImport，这里只发意图 */
 function importDrawing() {
-  // 打开文件选择对话框
+  emit('import');
 }
 
+/** 比例尺校准：同上，浮层与取点在宿主侧编排 */
 function calibrateScale() {
-  // 打开校准对话框
+  emit('calibrate');
 }
 
 function undo() {

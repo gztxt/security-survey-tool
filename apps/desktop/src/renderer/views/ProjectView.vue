@@ -34,11 +34,13 @@ import { useProjectStore } from '@/stores/project';
 import { useSettingsStore } from '@/stores/settings';
 import ProjectHeader from '@/components/layout/ProjectHeader.vue';
 import SidebarPanel from '@/components/layout/SidebarPanel.vue';
+import { useBaselineImport } from '@/composables/useBaselineImport';
 
 const router = useRouter();
 const route = useRoute();
 const projectStore = useProjectStore();
 const settingsStore = useSettingsStore();
+const baselineImport = useBaselineImport();
 
 const project = computed(() => projectStore.currentProject);
 const isDirty = computed(() => projectStore.isDirty);
@@ -74,7 +76,8 @@ function showExportDialog() {
 }
 
 function importDrawing() {
-  // 触发文件选择对话框
+  // 基线导入链：原生对话框 → grantPaths → drawing.import（决策 3）
+  void baselineImport.runImport();
 }
 </script>
 

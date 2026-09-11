@@ -3,16 +3,36 @@
 import { RouterView } from 'vue-router';
 import { useSettingsStore } from '@/stores/settings';
 import { useProjectStore } from '@/stores/project';
-import { onMounted } from 'vue';
+import { onMounted, onUnmounted } from 'vue';
 
 const settings = useSettingsStore();
 const projectStore = useProjectStore();
 
+/**
+ * 关窗前脏数据拦截（AC-5.2）。
+ * 自动保存已落盘时 isDirty=false，不会打扰用户；
+ * 有未保存改动时返回字符串以触发浏览器/Electron 原生确认框。
+ */
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  if (!projectStore.isDirty) return;
+  e.preventDefault();
+  e.returnValue = '当前项目有未保存的更改，确定要离开吗？';
+  return e.returnValue;
+}
+
 onMounted(() => {
-  // 初始化项目存储
+  // 自动保存：仅在已有落盘路径时静默写盘，否则只保留脏标记，
+  // 避免每 30s 弹一次保存对话框（AC-5.1 / 决策 4）。
   projectStore.startAutoSave(settings.autoSaveInterval, async () => {
-    // 实际保存逻辑
+    if (!projectStore.projectFilePath) return;
+    await projectStore.saveProject();
   });
+  window.addEventListener('beforeunload', onBeforeUnload);
+});
+
+onUnmounted(() => {
+  projectStore.stopAutoSave();
+  window.removeEventListener('beforeunload', onBeforeUnload);
 });
 </script>
 

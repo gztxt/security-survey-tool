@@ -223,10 +223,12 @@ import { useDeviceLibraryStore } from '@/stores/deviceLibrary';
 import { useRouter } from 'vue-router';
 import DeviceIcon from '@/components/device/DeviceIcon.vue';
 import ContextMenu from '@/components/common/ContextMenu.vue';
+import { useBaselineImport } from '@/composables/useBaselineImport';
 
 const projectStore = useProjectStore();
 const deviceLibraryStore = useDeviceLibraryStore();
 const router = useRouter();
+const baselineImport = useBaselineImport();
 
 const props = defineProps<{
   width?: number;
@@ -288,7 +290,9 @@ function selectWell(wellId: string) {
 }
 
 function addDrawing() {
-  router.push({ name: 'import' });
+  // 现网 bug 修复：'import' 路由从未存在，router.push({name:'import'}) 必抛
+  // "No match for {"name":"import"}"。改为直接走基线导入链（原生对话框）。
+  void baselineImport.runImport();
 }
 
 function showDrawingMenu(drawing: any, event: MouseEvent) {

@@ -1,5 +1,15 @@
 <template>
-  <div class="drawing-view" ref="containerRef">
+  <div class="drawing-view" ref="containerRef" :class="{ 'is-dragover': dragOver }">
+    <!-- 工具栏（D-2：本期由 CanvasView 迁到主视图挂载） -->
+    <Toolbar
+      ref="toolbarRef"
+      @tool-changed="onToolChanged"
+      @viewport-changed="onToolbarViewportChanged"
+      @import="onToolbarImport"
+      @calibrate="onToolbarCalibrate"
+      @save="onToolbarSave"
+    />
+
     <!-- 图纸标签栏 -->
     <DrawingTabs
       ref="tabsRef"
@@ -27,6 +37,23 @@
         @viewport-change="onViewportChange"
         @context-menu="onCanvasContextMenu"
       />
+
+      <!-- 比例尺校准浮层（决策 5.2 / AC-3.1） -->
+      <CalibrationOverlay
+        v-if="cal.active && activeDrawing"
+        :step="cal.step"
+        :hint="cal.hint"
+        :points="calPoints"
+        :preview-distance="cal.previewDistance"
+        :to-model="canvasToModel"
+        :to-screen="canvasToScreen"
+        @pick="onCalPick"
+        @apply="onCalApply"
+        @cancel="cal.cancel()"
+      />
+
+      <!-- 拖拽导入提示遮罩 -->
+      <div v-if="dragOver" class="drop-mask">松开以导入底图（DWG 需转换，推荐 DXF）</div>
 
       <!-- 空状态 -->
       <div v-else class="empty-state">
@@ -118,6 +145,14 @@
       :items="canvasMenu.items"
       @select="onCanvasMenuSelect"
     />
+
+    <!-- DWG 无 ODA 降级引导（AC-2.2 三选一） -->
+    <DwgFallbackDialog
+      :files="baselineImport.fallbackFiles.value"
+      @import="onFallbackImport"
+      @as-raster="onFallbackRaster"
+      @dismiss="baselineImport.dismissFallback()"
+    />
   </div>
 </template>
 
@@ -129,10 +164,21 @@ import { useSettingsStore } from '@/stores/settings';
 import DrawingTabs from '@/components/layout/DrawingTabs.vue';
 import CanvasViewport from '@/components/canvas/CanvasViewport.vue';
 import ContextMenu from '@/components/common/ContextMenu.vue';
+import Toolbar from '@/components/common/Toolbar.vue';
+import CalibrationOverlay from '@/components/canvas/CalibrationOverlay.vue';
+import DwgFallbackDialog from '@/components/import/DwgFallbackDialog.vue';
+import { useBaselineImport } from '@/composables/useBaselineImport';
+import { useCalibration } from '@/composables/useCalibration';
+import type { Point2D } from '@security-survey/shared-types';
 
 const projectStore = useProjectStore();
 const deviceStore = useDeviceStore();
 const settingsStore = useSettingsStore();
+
+/** 基线导入链（对话框/拖拽/右键/项目树四入口汇聚） */
+const baselineImport = useBaselineImport();
+/** 比例尺校准链 */
+const cal = useCalibration();
 
 const props = defineProps<{
   projectId?: string;
@@ -148,6 +194,41 @@ const containerRef = ref<HTMLElement>();
 const canvasAreaRef = ref<HTMLElement>();
 const tabsRef = ref<any>(null);
 const viewportRef = ref<any>(null);
+const toolbarRef = ref<any>(null);
+
+/**
+ * 画布坐标换算桥：校准浮层与画布共用同一变换矩阵，
+ * 画布尚未挂载（无图纸）时给单位阵，保证浮层不抛错。
+ */
+function canvasToModel(screen: Point2D): Point2D {
+  return viewportRef.value?.screenToModel?.(screen) ?? { x: screen.x, y: screen.y };
+}
+function canvasToScreen(model: Point2D): Point2D {
+  return viewportRef.value?.modelToScreen?.(model) ?? { x: model.x, y: model.y };
+}
+
+/** 校准已拾取点（模型坐标），交给浮层做标记与连线 */
+const calPoints = computed<Point2D[]>(() => {
+  const pts: Point2D[] = [];
+  if (cal.point1.value) pts.push(cal.point1.value);
+  if (cal.point2.value) pts.push(cal.point2.value);
+  return pts;
+});
+
+function onCalPick(p: Point2D) {
+  cal.addPoint(p);
+}
+
+function onCalApply(payload: { realDistance: number; unit: 'mm' | 'cm' | 'm' }) {
+  cal.apply(payload);
+}
+
+function fitViewport() {
+  viewportRef.value?.fitToContent?.();
+}
+
+// 让导入链在成功后自动适应视图（AC-1.4 / AC-2.4）
+baselineImport.onFitViewport(() => fitViewport());
 
 /** 捕获当前图纸画布快照存入 store，供主进程导出引擎使用 */
 function captureSnapshotToStore() {
@@ -219,16 +300,54 @@ function onDrop(e: DragEvent) {
   dragOver.value = false;
 
   const files = Array.from(e.dataTransfer?.files || []);
-  const cadFiles = files.filter(f => /\.(dwg|dxf)$/i.test(f.name));
-
-  if (cadFiles.length > 0) {
-    importDrawings(cadFiles);
-  }
+  if (!files.length) return;
+  // 交给统一导入链：拖拽来源的路径会经 fs:grantPaths 申请授权（AC-2.2）
+  importDrawings(files);
 }
 
 async function importDrawings(files: File[]) {
-  for (const file of files) {
-    await projectStore.importDrawing(file);
+  await baselineImport.importFromFiles(files);
+}
+
+/** 工具栏 / 右键菜单 / 快捷键的统一导入入口（原生对话框路径） */
+function onToolbarImport() {
+  void baselineImport.runImport();
+}
+
+/** 降级对话框「选择 DXF 文件」回流 */
+async function onFallbackImport(paths: string[]) {
+  await baselineImport.importPaths(paths);
+}
+
+/** 降级对话框「作为图片底图导入」（AC-2.2 选项 2） */
+async function onFallbackRaster(paths: string[]) {
+  await baselineImport.importDwgAsRaster(paths);
+}
+
+function onToolbarCalibrate() {
+  if (cal.active.value) {
+    cal.cancel();
+    return;
+  }
+  cal.start();
+}
+
+function onToolbarSave() {
+  void projectStore.saveProject();
+}
+
+function onToolChanged(t: string) {
+  // Toolbar 工具切换：校准态由 cal.active 独立管理，其余工具透传给画布
+  if (t === 'calibrate') {
+    onToolbarCalibrate();
+    return;
+  }
+  viewportRef.value?.setActiveTool?.(t);
+}
+
+function onToolbarViewportChanged(vp: any) {
+  if (vp && activeDrawing.value) {
+    projectStore.updateViewport(vp);
   }
 }
 
@@ -335,29 +454,26 @@ function onCanvasMenuSelect(action: string) {
   }
 }
 
+/**
+ * 导入入口（右键菜单 / Ctrl+O）。
+ * 原实现用 DOM `<input type=file>`，拿不到真实路径，主进程必然拒绝；
+ * 改为走原生对话框 + grantPaths 链（决策 3）。
+ */
 function triggerFileImport() {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.dwg,.dxf';
-  input.multiple = true;
-  input.onchange = (e) => {
-    const files = Array.from((e.target as HTMLInputElement).files || []);
-    if (files.length) importDrawings(files);
-  };
-  input.click();
+  void baselineImport.runImport();
 }
 
 function zoomFit() {
-  // 通过 CanvasViewport 实例调用
-  // TODO: 通过 ref 调用 canvasViewport.zoomFit()
+  fitViewport();
 }
 
 function zoomTo(zoom: number) {
-  // TODO
+  viewportRef.value?.zoomToLevel?.(zoom);
 }
 
 function zoomToSelection() {
-  // TODO
+  // 选区适应依赖选中集，暂以整体适应兜底（不改变既有行为语义）
+  fitViewport();
 }
 
 function openDrawingProperties() {
@@ -449,6 +565,20 @@ watch(() => projectStore.currentDrawingId, async (newId) => {
   height: 100%;
   background: var(--bg-primary);
   overflow: hidden;
+}
+
+.drop-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(37, 99, 235, 0.08);
+  border: 2px dashed #2563eb;
+  color: #1d4ed8;
+  font-size: 14px;
+  pointer-events: none;
 }
 
 .canvas-area {

@@ -11,7 +11,7 @@ import './main-polyfill';
 import electron from 'electron';
 const { app, BrowserWindow, ipcMain, dialog, shell, protocol } = electron;
 import { join, resolve, sep, parse, dirname, basename } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, mkdtempSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, mkdtempSync, statSync } from 'fs';
 import { spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
@@ -353,15 +353,21 @@ function registerIpcHandlers(): void {
   ipcMain.handle('project:open', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: '打开项目',
-      filters: [{ name: '安防勘点项目', extensions: ['survey'] }],
+      // 追加"所有文件"便于打开历史遗留的 .ssproj / .json 项目文件（向后兼容）
+      filters: [
+        { name: '安防勘点项目', extensions: ['survey'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
       properties: ['openFile'],
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     return await openProject(result.filePaths[0]);
   });
 
-  ipcMain.handle('project:save', async (_, projectData: any) => {
-    return await saveProject(projectData);
+  ipcMain.handle('project:save', async (_, projectData: any, filePath?: string) => {
+    // filePath 为空时主进程弹保存对话框（见决策 4：保存链由主进程统一负责）
+    if (typeof filePath !== 'string' || filePath.length === 0) filePath = undefined;
+    return await saveProject(projectData, filePath);
   });
 
   ipcMain.handle('project:saveAs', async (_, projectData: any) => {
@@ -463,6 +469,45 @@ function registerIpcHandlers(): void {
     } catch {
       return null;
     }
+  });
+
+  // 读取二进制文件（位图底图 / PDF 栅格化用），返回 base64，不经渲染进程 fs 权限
+  ipcMain.handle('fs:readFileBase64', async (_, path: string) => {
+    try {
+      return readFileSync(assertAllowedPath(path)).toString('base64');
+    } catch {
+      return null;
+    }
+  });
+
+  // 为拖拽 / 手动输入来源的文件路径申请一次性读取授权（决策 3）
+  // 只接受白名单扩展名，且文件必须真实存在；不放宽目录级权限。
+  ipcMain.handle('fs:grantPaths', async (_, paths: any) => {
+    const granted: string[] = [];
+    const rejected: Array<{ path: string; reason: string }> = [];
+    const list = Array.isArray(paths) ? paths.filter(p => typeof p === 'string') : [];
+    if (!Array.isArray(paths)) {
+      return { granted, rejected: [{ path: String(paths), reason: '参数必须是路径数组' }] };
+    }
+    for (const p of list) {
+      try {
+        const resolved = resolve(p);
+        const ext = parse(resolved).ext.toLowerCase();
+        if (!ALLOWED_CAD_EXTENSIONS.has(ext)) {
+          rejected.push({ path: p, reason: `不支持的文件类型: ${ext || '(无扩展名)'}` });
+          continue;
+        }
+        if (!existsSync(resolved)) {
+          rejected.push({ path: p, reason: '文件不存在' });
+          continue;
+        }
+        dialogApprovedPaths.add(resolved);
+        granted.push(resolved);
+      } catch (e) {
+        rejected.push({ path: String(p), reason: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { granted, rejected };
   });
 
   ipcMain.handle('fs:writeFile', async (_, path: string, content: string, encoding?: 'utf8' | 'base64') => {
@@ -593,17 +638,33 @@ function addRecentProject(path: string): void {
 
 async function importDrawings(filePaths: string[]) {
   const results = [];
-  for (const filePath of filePaths) {
-    const ext = filePath.toLowerCase().split('.').pop();
+  for (const rawPath of filePaths) {
+    let filePath: string;
+    try {
+      // 只接受对话框/授权过的路径（拖拽需先经 fs:grantPaths）
+      filePath = assertReadableCadPath(rawPath);
+    } catch (err) {
+      console.warn('拒绝导入未授权路径:', err instanceof Error ? err.message : err);
+      continue;
+    }
+    const extRaw = parse(filePath).ext.toLowerCase().replace(/^\./, '');
+    // .survey 兼容性：DrawingFile.format 联合类型无 'jpeg'，统一归一为 'jpg'
+    const ext = extRaw === 'jpeg' ? 'jpg' : extRaw;
+    let size = 0;
+    try {
+      size = statSync(filePath).size;
+    } catch {
+      size = 0;
+    }
     const drawing: any = {
       id: randomUUID(),
-      name: filePath.split(/[/\\]/).pop()!,
+      name: basename(filePath, parse(filePath).ext),
       floor: '',
       order: 0,
       file: {
-        originalName: filePath.split(/[/\\]/).pop()!,
+        originalName: basename(filePath),
         format: ext as any,
-        size: 0,
+        size,
         path: filePath,
       },
       calibration: { isCalibrated: false, point1: { x: 0, y: 0 }, point2: { x: 0, y: 0 }, realDistance: 0, scale: 1, unit: 'm' },
@@ -627,6 +688,8 @@ async function importDrawings(filePaths: string[]) {
         console.warn('CAD 解析失败，导入为空图纸:', err instanceof Error ? err.message : err);
       }
     }
+    // 位图/PDF：不在此处解析，交由渲染进程底图链（T5）按 path 加载引用，
+    // 二进制内容绝不写进 .survey。
 
     results.push(drawing);
   }

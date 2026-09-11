@@ -79,6 +79,9 @@ export class CadRenderer {
   private cableTrays: CableTray[] = [];
   private fovs: Map<string, FieldOfView> = new Map();
 
+  /** 位图底图缓存：imagePath -> 已加载/加载中的 HTMLImageElement */
+  private imageCache: Map<string, HTMLImageElement> = new Map();
+
   // 交互状态
   private hoveredEntityId: string | null = null;
   private selectedEntityIds: Set<string> = new Set();
@@ -582,7 +585,68 @@ export class CadRenderer {
   }
 
   private drawImage(data: any): void {
-    // 图片渲染：需要加载 Image 对象，此处略过
+    // 位图底图渲染（决策 5 / T2 首版，T5 完善加载时机）：
+    // 图片对象由 registerImage() 预注册到 imageCache，渲染时按 imagePath 取用。
+    // 未注册（尚未加载完成）时绘制占位框，保证布局可辨识且不报错。
+    const { ctx } = this;
+    const imagePath: string = data?.imagePath || '';
+    const img = this.imageCache.get(imagePath);
+    const x = data?.position?.x ?? 0;
+    const y = data?.position?.y ?? 0;
+    const w = data?.size?.width ?? 0;
+    const h = data?.size?.height ?? 0;
+
+    if (!img || !img.complete || img.naturalWidth === 0 || w <= 0 || h <= 0) {
+      ctx.save();
+      ctx.setLineDash([6 / this.viewport.zoom, 4 / this.viewport.zoom]);
+      ctx.globalAlpha = 0.45;
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+      return;
+    }
+
+    ctx.save();
+    const rotation = Number(data?.rotation) || 0;
+    if (rotation) {
+      // 绕图元原点旋转（CAD IMAGE 插入点语义）
+      ctx.translate(x, y);
+      ctx.rotate((rotation * Math.PI) / 180);
+      ctx.drawImage(img, 0, 0, w, h);
+    } else {
+      ctx.drawImage(img, x, y, w, h);
+    }
+    ctx.restore();
+  }
+
+  /**
+   * 注册位图资源到渲染缓存。
+   * src 可为 dataURL / blob URL / 文件路径；同一 key 重复注册时覆盖并立即失效缓存图。
+   * 加载完成后由调用方触发重绘（或依赖 requestRender 的常规循环）。
+   */
+  registerImage(key: string, src: string): HTMLImageElement {
+    const existing = this.imageCache.get(key);
+    if (existing && existing.dataset?.src === src) return existing;
+
+    const img = new Image();
+    img.dataset.src = src;
+    img.decoding = 'async';
+    img.src = src;
+    this.imageCache.set(key, img);
+    return img;
+  }
+
+  /** 位图是否已就绪可用于绘制 */
+  isImageReady(key: string): boolean {
+    const img = this.imageCache.get(key);
+    return !!img && img.complete && img.naturalWidth > 0;
+  }
+
+  unregisterImage(key: string): void {
+    this.imageCache.delete(key);
+  }
+
+  clearImageCache(): void {
+    this.imageCache.clear();
   }
 
   private getEntityColor(entity: GraphicEntity): string {

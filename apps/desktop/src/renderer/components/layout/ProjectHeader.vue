@@ -10,7 +10,9 @@
 
       <div class="project-title">
         <h1>{{ project?.name || '未命名项目' }}</h1>
-        <span class="project-status" v-if="dirty">● 未保存</span>
+        <span v-if="projectStore.saving" class="project-status is-saving">保存中…</span>
+        <span v-else-if="dirty" class="project-status">● 未保存</span>
+        <span v-else-if="projectStore.lastSavedAt" class="project-status is-saved">✓ 已保存</span>
       </div>
 
       <nav class="breadcrumb" v-if="currentDrawing">

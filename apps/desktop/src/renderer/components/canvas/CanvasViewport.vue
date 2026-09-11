@@ -726,6 +726,52 @@ function resetView() {
   updateRulers();
 }
 
+/**
+ * 适应视图：把图纸内容缩放到刚好填满可视区（留 8% 边距）。
+ * 供「导入后自动 fit」「缩放适应 (Shift+1)」调用（AC-2.4）。
+ */
+function fitToContent(): void {
+  const el = container.value || mainCanvas.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+
+  const b = calculateDrawingBounds();
+  const padding = 0.92; // 8% 边距
+  const scaleX = (rect.width * padding) / Math.max(b.width, 1);
+  const scaleY = (rect.height * padding) / Math.max(b.height, 1);
+  const z = Math.min(scaleX, scaleY);
+  const zoom = Math.max(0.02, Math.min(40, z));
+
+  const cx = b.minX + b.width / 2;
+  const cy = b.minY + b.height / 2;
+  viewport.value = {
+    ...viewport.value,
+    transform: { a: zoom, b: 0, c: 0, d: zoom, e: rect.width / 2 - cx * zoom, f: rect.height / 2 - cy * zoom },
+    center: { x: cx, y: cy },
+    zoom,
+  };
+  renderer.value?.setViewport(viewport.value);
+  emit('viewport-changed', viewport.value);
+  updateRulers();
+}
+
+/** 缩放到指定倍率（保持中心不变），供「实际大小 100%」调用 */
+function zoomToLevel(z: number): void {
+  const el = container.value || mainCanvas.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const center = screenToModel({ x: rect.width / 2, y: rect.height / 2 });
+  viewport.value = {
+    ...viewport.value,
+    transform: { a: z, b: 0, c: 0, d: z, e: rect.width / 2 - center.x * z, f: rect.height / 2 - center.y * z },
+    zoom: z,
+  };
+  renderer.value?.setViewport(viewport.value);
+  emit('viewport-changed', viewport.value);
+  updateRulers();
+}
+
 // 坐标转换
 function getCanvasPosition(e: MouseEvent): Point2D {
   const rect = mainCanvas.value!.getBoundingClientRect();
@@ -1076,6 +1122,20 @@ defineExpose({
     } catch {
       return null;
     }
+  },
+  /** 适应视图：内容缩放到刚好填满可视区（导入后 / Shift+1） */
+  fitToContent,
+  /** 缩放到指定倍率（1 = 实际大小） */
+  zoomToLevel,
+  /** 视口变换（校准浮层做坐标换算用，与画布共用同一矩阵） */
+  screenToModel,
+  modelToScreen,
+  /** 当前视口状态 */
+  getViewport: () => viewport.value,
+  /** 外部（主工具栏）切换交互工具 */
+  setActiveTool: (t: string) => {
+    const allowed = ['select', 'pan', 'device', 'wire', 'tray', 'well', 'zoom'];
+    if (allowed.includes(t)) tool.value = t as typeof tool.value;
   },
 });
 </script>

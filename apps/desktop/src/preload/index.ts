@@ -212,7 +212,8 @@ const api = {
   project: {
     new: (name: string) => ipcRenderer.invoke('project:new', name),
     open: () => ipcRenderer.invoke('project:open'),
-    save: (data: any) => ipcRenderer.invoke('project:save', data),
+    // 第二参 filePath 可选：传入则主进程直写该路径，不传则弹保存对话框
+    save: (data: any, filePath?: string) => ipcRenderer.invoke('project:save', data, filePath),
     saveAs: (data: any) => ipcRenderer.invoke('project:saveAs', data),
     recent: () => ipcRenderer.invoke('project:recent'),
   },
@@ -237,6 +238,8 @@ const api = {
     deviceList: (options: any) => ipcRenderer.invoke('export:deviceList', options),
     cableSchedule: (options: any) => ipcRenderer.invoke('export:cableSchedule', options),
     report: (options: any) => ipcRenderer.invoke('export:report', options),
+    // DXF overlay 由主进程直接生成（不经渲染进程委托），见决策 2
+    dxf: (options: any) => ipcRenderer.invoke('export:dxf', options),
     saveFile: (fileName: string, dataBase64: string) => ipcRenderer.invoke('export:saveFile', fileName, dataBase64),
   },
 
@@ -265,9 +268,12 @@ const api = {
   // 文件系统
   fs: {
     readFile: (path: string) => ipcRenderer.invoke('fs:readFile', path),
+    readFileBase64: (path: string) => ipcRenderer.invoke('fs:readFileBase64', path),
     writeFile: (path: string, content: string, encoding?: 'utf8' | 'base64') => ipcRenderer.invoke('fs:writeFile', path, content, encoding),
     showOpenDialog: (options: any) => ipcRenderer.invoke('fs:showOpenDialog', options),
     showSaveDialog: (options: any) => ipcRenderer.invoke('fs:showSaveDialog', options),
+    // 拖拽/输入等非对话框来源的文件路径需显式申请，主进程校验扩展名白名单后放行
+    grantPaths: (paths: string[]) => ipcRenderer.invoke('fs:grantPaths', paths),
   },
 
   // Shell
@@ -276,12 +282,13 @@ const api = {
     openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),
   },
 
-  // 事件监听
+  // 事件监听（返回取消订阅函数，便于组件卸载时清理）
   on: (channel: string, callback: (...args: any[]) => void) => {
     const validChannels = ['project:updated', 'drawing:imported', 'export:progress', 'cad:progress', 'export:request', 'export:response'];
-    if (validChannels.includes(channel)) {
-      ipcRenderer.on(channel, (_event, ...args) => callback(...args));
-    }
+    if (!validChannels.includes(channel)) return () => {};
+    const listener = (_event: any, ...args: any[]) => callback(...args);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
   },
   off: (channel: string, callback: (...args: any[]) => void) => {
     ipcRenderer.removeListener(channel, callback);
@@ -296,12 +303,23 @@ const api = {
   },
 };
 
-// 暴露给渲染进程
+// ============ 暴露给渲染进程（D-1 根因修复）============
+//
+// 历史现状：renderer 侧全部按 `window.api.*` 调用（stores / views / components 共几十处），
+// 而 preload 只 exposeInMainWorld('electronAPI', ...)，导致所有桥接调用在运行期
+// 抛 "Cannot read properties of undefined (reading 'xxx')" —— 表现为"保存成功"但文件
+// 从未落盘、导入点击无反应等一类假成功故障。
+//
+// 收敛策略：以 renderer 实际使用的 `api` 为准，同时保留 `electronAPI` 别名
+// （_archive 中的历史备份与部分第三方片段按 electronAPI 书写），两个名字指向同一份
+// 能力，避免任何一侧回归失败。
+contextBridge.exposeInMainWorld('api', api);
 contextBridge.exposeInMainWorld('electronAPI', api);
 
 // 类型声明
 declare global {
   interface Window {
     electronAPI: typeof api;
+    api: typeof api;
   }
 }
