@@ -1,0 +1,733 @@
+// Electron 主进程入口
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol } from 'electron';
+import { join, resolve, sep, parse, dirname, basename } from 'path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, mkdtempSync } from 'fs';
+import { spawn } from 'child_process';
+import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
+
+// 工作区包：真实导出引擎 / 设备库 / CAD 解析器
+import { Exporter } from '@security-survey/exporter';
+import { DeviceLibrary, BUILTIN_DEVICES } from '@security-survey/device-lib';
+import type { DeviceModel, ExportInclude, Project } from '@security-survey/shared-types';
+import { cadParser } from '@security-survey/cad-parser';
+
+// ============ 环境判断 ============
+
+const isDev = !app.isPackaged;
+const isWin = process.platform === 'win32';
+const isMac = process.platform === 'darwin';
+const isLinux = process.platform === 'linux';
+
+// ============ 路径工具 ============
+
+function getResourcePath(...paths: string[]): string {
+  const base = isDev ? resolve(__dirname, '..') : process.resourcesPath;
+  return resolve(base, ...paths);
+}
+
+function getUserDataPath(...paths: string[]): string {
+  return resolve(app.getPath('userData'), ...paths);
+}
+
+// 仅允许访问用户数据目录下的白名单子目录，防止 fs IPC 任意路径读写
+// 另允许通过原生对话框明确选择过的路径（dialogApprovedPaths）
+const dialogApprovedPaths = new Set<string>();
+
+function assertAllowedPath(p: string): string {
+  const resolved = resolve(p);
+  const roots = ['projects', 'templates', 'exports', 'cache', 'logs'].map(d => getUserDataPath(d));
+  if (roots.some(root => resolved === root || resolved.startsWith(root + sep))) {
+    return resolved;
+  }
+  if (dialogApprovedPaths.has(resolved)) {
+    return resolved;
+  }
+  throw new Error('拒绝访问允许目录之外的路径: ' + resolved);
+}
+
+function getPythonPath(): string {
+  if (isWin) {
+    return getResourcePath('python', 'python.exe');
+  }
+  return getResourcePath('python', 'bin', 'python3');
+}
+
+function getOdaConverterPath(): string {
+  // 优先环境变量指定的路径（支持自定义安装位置）
+  if (process.env.ODA_PATH) {
+    return resolve(process.env.ODA_PATH);
+  }
+  // 常见系统安装位置
+  const systemPaths = isWin
+    ? [
+        'C:\\Program Files\\ODA\\ODAFileConverter\\ODAFileConverter.exe',
+        'C:\\Program Files (x86)\\ODA\\ODAFileConverter\\ODAFileConverter.exe',
+      ]
+    : isMac
+      ? ['/Applications/ODAFileConverter.app/Contents/MacOS/ODAFileConverter']
+      : [
+          '/usr/local/bin/ODAFileConverter',
+          '/opt/ODA/ODAFileConverter/ODAFileConverter',
+          '/opt/ODA/ODAFileConverter',
+        ];
+  for (const p of systemPaths) {
+    if (existsSync(p)) return p;
+  }
+  // 回退到应用资源目录
+  if (isWin) {
+    return getResourcePath('oda', 'ODAFileConverter.exe');
+  }
+  return getResourcePath('oda', 'ODAFileConverter');
+}
+
+// ============ 窗口管理 ============
+
+let mainWindow: BrowserWindow | null = null;
+let splashWindow: BrowserWindow | null = null;
+
+function createSplashWindow(): void {
+  splashWindow = new BrowserWindow({
+    width: 400,
+    height: 300,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    movable: false,
+    webPreferences: {
+      // 启动画面为纯静态页，无需 Node 能力；关闭 nodeIntegration 以降低攻击面
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  if (isDev) {
+    splashWindow.loadURL('http://localhost:5173/splash.html');
+  } else {
+    splashWindow.loadFile(join(__dirname, '../../dist/splash.html'));
+  }
+}
+
+function createMainWindow(): void {
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 1024,
+    minHeight: 768,
+    show: false,
+    titleBarStyle: isMac ? 'hiddenInset' : 'default',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      // 开发模式同样保持 webSecurity 开启；
+      // Vite dev server 同源加载不需要关闭 web 安全
+    },
+  });
+
+  // 加载页面
+  if (isDev) {
+    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  } else {
+    mainWindow.loadFile(join(__dirname, '../../dist/index.html'));
+  }
+
+  // 窗口就绪后显示，关闭启动画面
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+    splashWindow?.close();
+    splashWindow = null;
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
+  // 外部链接在浏览器打开
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+}
+
+// ============ 应用生命周期 ============
+
+app.whenReady().then(async () => {
+  // 单实例锁
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    app.quit();
+    return;
+  }
+
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+
+  // 协议处理（自定义协议打开项目文件）
+  protocol.registerSchemesAsPrivileged([{ scheme: 'survey', privileges: { secure: true, standard: true } }]);
+
+  createSplashWindow();
+
+  // 预加载资源
+  await preloadResources();
+
+  createMainWindow();
+
+  // 注册 IPC 处理器
+  registerIpcHandlers();
+
+  // macOS dock 点击重新创建窗口
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (!isMac) app.quit();
+});
+
+// ============ 资源预加载 ============
+
+async function preloadResources(): Promise<void> {
+  // 检查 Python sidecar
+  const pythonPath = getPythonPath();
+  if (!existsSync(pythonPath)) {
+    console.warn('Python sidecar not found at:', pythonPath);
+    // 可选：下载/解压内嵌 Python
+  }
+
+  // 检查 ODA Converter
+  const odaPath = getOdaConverterPath();
+  if (!existsSync(odaPath)) {
+    console.warn('ODA File Converter not found at:', odaPath);
+  }
+
+  // 确保用户数据目录存在
+  const dirs = ['projects', 'templates', 'exports', 'cache', 'logs'];
+  for (const dir of dirs) {
+    const p = getUserDataPath(dir);
+    if (!existsSync(p)) mkdirSync(p, { recursive: true });
+  }
+}
+
+// ============ IPC 处理器注册 ============
+
+function registerIpcHandlers(): void {
+  // --- 项目管理 ---
+  ipcMain.handle('project:new', async (_, name: string) => {
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      throw new Error('项目名称必须是非空字符串');
+    }
+    const project = await createNewProject(name);
+    return project;
+  });
+
+  ipcMain.handle('project:open', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: '打开项目',
+      filters: [{ name: '安防勘点项目', extensions: ['survey'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return await openProject(result.filePaths[0]);
+  });
+
+  ipcMain.handle('project:save', async (_, projectData: any) => {
+    return await saveProject(projectData);
+  });
+
+  ipcMain.handle('project:saveAs', async (_, projectData: any) => {
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      title: '另存为项目',
+      filters: [{ name: '安防勘点项目', extensions: ['survey'] }],
+      defaultPath: `${projectData.name}.survey`,
+    });
+    if (result.canceled || !result.filePath) return null;
+    return await saveProject(projectData, result.filePath);
+  });
+
+  ipcMain.handle('project:recent', async () => {
+    return getRecentProjects();
+  });
+
+  // --- 图纸管理 ---
+  ipcMain.handle('drawing:import', async (_, filePaths: string[]) => {
+    return await importDrawings(filePaths);
+  });
+
+  ipcMain.handle('drawing:calibrate', async (_, drawingId: string, calibration: any) => {
+    return await calibrateDrawing(drawingId, calibration);
+  });
+
+  // --- CAD 解析（Python sidecar） ---
+  ipcMain.handle('cad:parse', async (_, filePath: string) => {
+    return await parseCadFile(filePath);
+  });
+
+  ipcMain.handle('cad:convertDwg', async (_, dwgPath: string) => {
+    return await convertDwgToDxf(dwgPath);
+  });
+
+  // --- 导出 ---
+  ipcMain.handle('export:pointMap', async (_, options: any) => {
+    return await exportPointMap(options);
+  });
+
+  ipcMain.handle('export:fovMap', async (_, options: any) => {
+    return await exportFovMap(options);
+  });
+
+  ipcMain.handle('export:topology', async (_, options: any) => {
+    return await exportTopology(options);
+  });
+
+  ipcMain.handle('export:deviceList', async (_, options: any) => {
+    return await exportDeviceList(options);
+  });
+
+  ipcMain.handle('export:cableSchedule', async (_, options: any) => {
+    return await exportCableSchedule(options);
+  });
+
+  ipcMain.handle('export:report', async (_, options: any) => {
+    return await exportReport(options);
+  });
+
+  // --- 设备库 ---
+  ipcMain.handle('device:getLibrary', async () => {
+    return getDeviceLibrary();
+  });
+
+  ipcMain.handle('device:addCustom', async (_, device: any) => {
+    return addCustomDevice(device);
+  });
+
+  ipcMain.handle('device:importLibrary', async (_, json: string) => {
+    return importDeviceLibrary(json);
+  });
+
+  ipcMain.handle('device:exportLibrary', async () => {
+    return exportDeviceLibrary();
+  });
+
+  // --- 设置 ---
+  ipcMain.handle('settings:get', async () => {
+    return getSettings();
+  });
+
+  ipcMain.handle('settings:set', async (_, key: string, value: any) => {
+    return setSetting(key, value);
+  });
+
+  // --- 窗口控制 ---
+  ipcMain.handle('window:minimize', () => mainWindow?.minimize());
+  ipcMain.handle('window:maximize', () => {
+    if (mainWindow?.isMaximized()) mainWindow.unmaximize();
+    else mainWindow?.maximize();
+  });
+  ipcMain.handle('window:close', () => mainWindow?.close());
+  ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized() ?? false);
+
+  // --- 文件系统 ---
+  ipcMain.handle('fs:readFile', async (_, path: string) => {
+    try {
+      return readFileSync(assertAllowedPath(path), 'utf8');
+    } catch {
+      return null;
+    }
+  });
+
+  ipcMain.handle('fs:writeFile', async (_, path: string, content: string, encoding?: 'utf8' | 'base64') => {
+    try {
+      writeFileSync(assertAllowedPath(path), content, encoding === 'base64' ? 'base64' : 'utf8');
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
+  ipcMain.handle('fs:showOpenDialog', async (_, options: any) => {
+    const result = await dialog.showOpenDialog(mainWindow!, options);
+    if (!result.canceled) {
+      for (const fp of result.filePaths) dialogApprovedPaths.add(resolve(fp));
+    }
+    return result;
+  });
+
+  ipcMain.handle('fs:showSaveDialog', async (_, options: any) => {
+    const result = await dialog.showSaveDialog(mainWindow!, options);
+    if (!result.canceled && result.filePath) {
+      dialogApprovedPaths.add(resolve(result.filePath));
+    }
+    return result;
+  });
+
+  // --- 外部链接 ---
+  ipcMain.handle('shell:openExternal', async (_, url: string) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return new Error('仅允许打开 http/https 链接');
+      }
+      return shell.openExternal(url);
+    } catch (e) {
+      return new Error('无效的 URL: ' + String(e));
+    }
+  });
+
+  ipcMain.handle('shell:openPath', async (_, path: string) => {
+    const resolved = resolve(path);
+    const exportsRoot = getUserDataPath('exports');
+    if (resolved !== exportsRoot && !resolved.startsWith(exportsRoot + sep)) {
+      return new Error('仅允许打开 exports 目录内的路径');
+    }
+    return shell.openPath(resolved);
+  });
+}
+
+// ============ 业务逻辑实现（存根，实际应在渲染进程或单独 Service 中） ============
+
+async function createNewProject(name: string) {
+  const project = {
+    id: randomUUID(),
+    name,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    drawings: [],
+    settings: {
+      defaultScale: 100,
+      unit: 'm',
+      gridSize: 1000,
+      snapEnabled: true,
+      autoSaveInterval: 30000,
+    },
+  };
+  return project;
+}
+
+async function openProject(filePath: string) {
+  try {
+    const content = readFileSync(filePath, 'utf8');
+    const project = JSON.parse(content);
+    if (typeof project !== 'object' || project === null || !('id' in project) || !('name' in project)) {
+      throw new Error('项目文件格式无效');
+    }
+    addRecentProject(filePath);
+    return project;
+  } catch (e) {
+    throw new Error(`打开项目失败: ${e}`);
+  }
+}
+
+async function saveProject(projectData: any, filePath?: string) {
+  if (!filePath) {
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      title: '保存项目',
+      filters: [{ name: '安防勘点项目', extensions: ['survey'] }],
+      defaultPath: `${projectData.name}.survey`,
+    });
+    if (result.canceled || !result.filePath) return false;
+    filePath = result.filePath;
+  }
+
+  try {
+    projectData.updatedAt = Date.now();
+    writeFileSync(filePath, JSON.stringify(projectData, null, 2), 'utf8');
+    addRecentProject(filePath);
+    return { success: true, path: filePath };
+  } catch (e) {
+    return { success: false, error: String(e) };
+  }
+}
+
+function getRecentProjects(): string[] {
+  const file = getUserDataPath('recent-projects.json');
+  if (!existsSync(file)) return [];
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function addRecentProject(path: string): void {
+  const file = getUserDataPath('recent-projects.json');
+  let list = getRecentProjects();
+  list = [path, ...list.filter(p => p !== path)].slice(0, 10);
+  writeFileSync(file, JSON.stringify(list), 'utf8');
+}
+
+async function importDrawings(filePaths: string[]) {
+  const results = [];
+  for (const filePath of filePaths) {
+    const ext = filePath.toLowerCase().split('.').pop();
+    const drawing: any = {
+      id: randomUUID(),
+      name: filePath.split(/[/\\]/).pop()!,
+      floor: '',
+      order: 0,
+      file: {
+        originalName: filePath.split(/[/\\]/).pop()!,
+        format: ext as any,
+        size: 0,
+        path: filePath,
+      },
+      calibration: { isCalibrated: false, point1: { x: 0, y: 0 }, point2: { x: 0, y: 0 }, realDistance: 0, scale: 1, unit: 'm' },
+      layers: [],
+      entities: [],
+      viewport: { transform: { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }, center: { x: 0, y: 0 }, zoom: 1, showGrid: true, showRuler: true },
+      devices: [],
+      wiring: { id: '', drawingId: '', weakPoints: [], trays: [], cables: [], topology: [] },
+    };
+
+    // CAD 格式尝试真实解析，失败不阻断导入（保留空图纸记录）
+    if (ext === 'dxf' || ext === 'dwg') {
+      try {
+        const parsed: any = await parseCadFile(filePath);
+        if (parsed?.drawing) {
+          drawing.entities = parsed.drawing.entities || [];
+          drawing.layers = parsed.drawing.layers || [];
+          if (parsed.drawing.viewport) drawing.viewport = parsed.drawing.viewport;
+        }
+      } catch (err) {
+        console.warn('CAD 解析失败，导入为空图纸:', err instanceof Error ? err.message : err);
+      }
+    }
+
+    results.push(drawing);
+  }
+  return results;
+}
+
+async function calibrateDrawing(drawingId: string, calibration: any) {
+  return { success: true, scale: calibration.scale };
+}
+
+// 校验 CAD 文件路径：仅允许用户数据目录或通过原生对话框选择过的路径
+function assertReadableCadPath(p: string): string {
+  const resolved = resolve(p);
+  if (!existsSync(resolved)) {
+    throw new Error('文件不存在: ' + resolved);
+  }
+  try {
+    return assertAllowedPath(resolved);
+  } catch {
+    throw new Error('拒绝解析允许目录之外且未经对话框选择的文件: ' + resolved);
+  }
+}
+
+async function parseCadFile(filePath: string) {
+  const safePath = assertReadableCadPath(filePath);
+  const ext = parse(safePath).ext.toLowerCase();
+
+  // 首选 TypeScript 解析器（@security-survey/cad-parser，内置 DXF 解析与 DWG 转换）
+  try {
+    const { drawing, stats } = await cadParser.parse({
+      filePath: safePath,
+      fileType: ext === '.dwg' ? 'dwg' : 'dxf',
+    });
+    return { success: true, drawing, stats };
+  } catch (err) {
+    const tsError = err instanceof Error ? err.message : String(err);
+    // 回退：Python sidecar（如可用）
+    try {
+      return await parseCadFileViaPython(safePath);
+    } catch {
+      throw new Error(`CAD 解析失败: ${tsError}`);
+    }
+  }
+}
+
+async function parseCadFileViaPython(filePath: string) {
+  // 调用 Python sidecar 解析
+  return new Promise((resolve, reject) => {
+    const pythonPath = getPythonPath();
+    const scriptPath = getResourcePath('python', 'parse_dxf.py');
+
+    if (!existsSync(pythonPath) || !existsSync(scriptPath)) {
+      reject(new Error('Python sidecar not found'));
+      return;
+    }
+
+    const proc = spawn(pythonPath, [scriptPath, filePath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data) => { stdout += data.toString(); });
+    proc.stderr.on('data', (data) => { stderr += data.toString(); });
+
+    proc.on('error', (err) => reject(err));
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        try {
+          resolve(JSON.parse(stdout));
+        } catch {
+          reject(new Error('Invalid JSON from parser'));
+        }
+      } else {
+        reject(new Error(`Parser exited with code ${code}: ${stderr}`));
+      }
+    });
+  });
+}
+
+async function convertDwgToDxf(dwgPath: string) {
+  return new Promise((resolve, reject) => {
+    const odaPath = getOdaConverterPath();
+    if (!existsSync(odaPath)) {
+      reject(new Error('ODA File Converter 未找到：请安装，或通过环境变量 ODA_PATH 指定可执行文件路径'));
+      return;
+    }
+
+    if (!existsSync(dwgPath)) {
+      reject(new Error('DWG 文件不存在'));
+      return;
+    }
+    if (parse(dwgPath).ext.toLowerCase() !== '.dwg') {
+      reject(new Error('仅支持 .dwg 格式文件'));
+      return;
+    }
+
+    // ODA File Converter CLI 为目录式参数：
+    // <输入目录> <输出目录> <输出版本> <输出格式> <递归> <审计> <过滤文件>
+    const { dir, name } = parse(dwgPath);
+    const dxfPath = join(dir, `${name}.dxf`);
+    const outDir = mkdtempSync(join(tmpdir(), 'oda-conv-'));
+    const args = [dir, outDir, 'ACAD2018', 'DXF', '0', '1', `${name}.dwg`];
+
+    const proc = spawn(odaPath, args, { stdio: 'pipe' });
+
+    proc.on('error', (err) => reject(new Error(`ODA 启动失败: ${err.message}`)));
+
+    proc.on('close', (code) => {
+      const produced = join(outDir, `${name}.dxf`);
+      if (code === 0 && existsSync(produced)) {
+        copyFileSync(produced, dxfPath);
+        resolve({ success: true, dxfPath });
+      } else {
+        reject(new Error(`ODA 转换失败，退出码: ${code}`));
+      }
+    });
+  });
+}
+
+// ============ 导出引擎（接入 @security-survey/exporter）============
+
+function buildInclude(only: keyof ExportInclude): ExportInclude {
+  return {
+    pointMap: only === 'pointMap',
+    fovMap: only === 'fovMap',
+    topology: only === 'topology',
+    deviceList: only === 'deviceList',
+    cableList: only === 'cableList',
+    report: only === 'report',
+  };
+}
+
+async function runExporter(options: any, only: keyof ExportInclude) {
+  const project: Project | undefined = options?.project;
+  if (!project) {
+    return { success: false, files: [], errors: ['导出缺少项目数据（options.project）'] };
+  }
+  const exporter = new Exporter(project, getDeviceLibraryInstance().getAll());
+  return exporter.export({
+    drawingIds:
+      Array.isArray(options?.drawingIds) && options.drawingIds.length
+        ? options.drawingIds
+        : (project.drawings || []).map((d) => d.id),
+    formats: Array.isArray(options?.formats) && options.formats.length ? options.formats : ['pdf'],
+    include: buildInclude(only),
+    resolution: options?.resolution,
+    template: options?.template,
+    outputDir: options?.outputDir || '',
+    canvasSnapshots: options?.canvasSnapshots || {},
+  });
+}
+
+async function exportPointMap(options: any) { return runExporter(options, 'pointMap'); }
+async function exportFovMap(options: any) { return runExporter(options, 'fovMap'); }
+async function exportTopology(options: any) { return runExporter(options, 'topology'); }
+async function exportDeviceList(options: any) { return runExporter(options, 'deviceList'); }
+async function exportCableSchedule(options: any) { return runExporter(options, 'cableList'); }
+async function exportReport(options: any) { return runExporter(options, 'report'); }
+
+// ============ 设备库（接入 @security-survey/device-lib）============
+
+const builtinIds = new Set(BUILTIN_DEVICES.map((d) => d.id));
+let deviceLibraryInstance: DeviceLibrary | null = null;
+
+function deviceLibraryFile(): string {
+  return getUserDataPath('device-library.json');
+}
+
+function loadCustomDevices(): DeviceModel[] {
+  try {
+    if (!existsSync(deviceLibraryFile())) return [];
+    const data = JSON.parse(readFileSync(deviceLibraryFile(), 'utf8'));
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistCustomDevices(lib: DeviceLibrary): void {
+  const customs = lib.getAll().filter((d) => !builtinIds.has(d.id));
+  mkdirSync(getUserDataPath(), { recursive: true });
+  writeFileSync(deviceLibraryFile(), JSON.stringify(customs, null, 2), 'utf8');
+}
+
+function getDeviceLibraryInstance(): DeviceLibrary {
+  if (!deviceLibraryInstance) {
+    deviceLibraryInstance = new DeviceLibrary(loadCustomDevices());
+  }
+  return deviceLibraryInstance;
+}
+
+function getDeviceLibrary() {
+  const lib = getDeviceLibraryInstance();
+  return {
+    devices: lib.getAll(),
+    categories: lib.getCategories(),
+    stats: lib.getStats(),
+  };
+}
+
+function addCustomDevice(device: any) {
+  if (!device || !device.id || !device.name || !device.category || !device.specs) {
+    return { success: false, error: '设备字段不完整（需要 id/name/category/specs）' };
+  }
+  const lib = getDeviceLibraryInstance();
+  lib.add(device);
+  persistCustomDevices(lib);
+  return { success: true };
+}
+
+function importDeviceLibrary(json: string) {
+  const lib = getDeviceLibraryInstance();
+  const result = lib.importFromJson(json);
+  if (result.success > 0) persistCustomDevices(lib);
+  return result;
+}
+
+function exportDeviceLibrary() {
+  const lib = getDeviceLibraryInstance();
+  return lib.exportToJson();
+}
+
+function getSettings() { return {}; }
+function setSetting(key: string, value: any) { return true; }
+
+// ============ 导出供测试使用 ============
+
+export { app, mainWindow, getResourcePath, getUserDataPath, getPythonPath, getOdaConverterPath };

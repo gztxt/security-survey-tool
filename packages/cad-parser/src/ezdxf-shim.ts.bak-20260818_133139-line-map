@@ -1,0 +1,135 @@
+// ezdxf 风格 API 垫片 —— 基于 npm 的 dxf-parser 实现
+// 提供 cad-parser 所需的最小 API 子集：parseDxf / DxfDocument / DxfEntity
+// 说明：Python 库 ezdxf 没有官方 JS 版，npm 上不存在 'ezdxf' 包，
+// 此垫片把 dxf-parser 的解析结果适配成 ezdxf 风格的访问接口。
+
+import { readFileSync } from 'fs';
+import DxfParser from 'dxf-parser';
+
+export interface DxfEntity {
+  dxf: any;
+}
+
+export interface DxfBlock {
+  dxf: any;
+  [Symbol.iterator](): Iterator<DxfEntity>;
+}
+
+export interface DxfDocument {
+  modelspace(): EntityCollection;
+  layers(): DxfEntity[];
+  blocks(): DxfBlock[];
+}
+
+/** 模型空间实体集合（支持 length() / slice() / 迭代） */
+export class EntityCollection {
+  private items: DxfEntity[];
+
+  constructor(items: DxfEntity[]) {
+    this.items = items;
+  }
+
+  length(): number {
+    return this.items.length;
+  }
+
+  slice(start: number, end?: number): DxfEntity[] {
+    return this.items.slice(start, end);
+  }
+
+  [Symbol.iterator](): Iterator<DxfEntity> {
+    return this.items[Symbol.iterator]();
+  }
+}
+
+/** 去除 MTEXT 格式控制码 */
+function stripFormatting(text: string): string {
+  return String(text || '')
+    .replace(/\\[A-Za-z][^;\\]*;/g, '')
+    .replace(/[{}\\]/g, '')
+    .trim();
+}
+
+/** 把 dxf-parser 的实体适配为 ezdxf 风格（dxf.* 命名空间 + 蛇形字段） */
+function wrapEntity(e: any): DxfEntity {
+  const dxf: any = { ...e, type: e.type, plain_text: () => stripFormatting(e.text) };
+
+  // dxf-parser 驼峰命名 -> ezdxf 蛇形命名
+  if (e.startAngle !== undefined) dxf.start_angle = e.startAngle;
+  if (e.endAngle !== undefined) dxf.end_angle = e.endAngle;
+
+  // LWPOLYLINE/POLYLINE 顶点
+  if (Array.isArray(e.points)) {
+    dxf.vertices = e.points.map((p: any) => ({ x: p.x ?? 0, y: p.y ?? 0 }));
+    dxf.bulges = e.points.map((p: any) => p.bulge || 0);
+    dxf.closed = !!e.shape;
+  }
+
+  // 插入点
+  if (e.position) dxf.insert = e.position;
+  if (e.xScale !== undefined) dxf.xscale = e.xScale;
+  if (e.yScale !== undefined) dxf.yscale = e.yScale;
+  if (e.zScale !== undefined) dxf.zscale = e.zScale;
+
+  // 默认值兜底，避免下游 convert* 空指针
+  dxf.paths = e.paths || [];
+  dxf.defpoints = e.defpoints || e.defPoint ? [e.defPoint, e.middleOfText].filter(Boolean) : (e.points || []);
+  dxf.text_midpoint = e.middleOfText || e.textMidpoint || { x: 0, y: 0 };
+  dxf.measurement = e.measurement ?? e.actualMeasurement ?? 0;
+  dxf.control_points = e.controlPoints || e.fitPoints || [];
+  dxf.knots = e.knotValues || [];
+  dxf.degree = e.degree ?? 3;
+  dxf.u_pixel = { x: e.uPerUnit ?? e.width ?? 0, y: 0 };
+  dxf.v_pixel = { x: 0, y: e.vPerUnit ?? e.height ?? 0 };
+  dxf.location = e.position || { x: 0, y: 0 };
+  dxf.attribs = e.attributes || {};
+
+  return { dxf };
+}
+
+/**
+ * 解析 DXF 文件为 ezdxf 风格文档对象
+ */
+export async function parseDxf(filePath: string): Promise<DxfDocument> {
+  const text = readFileSync(filePath, 'utf8');
+  const parser = new DxfParser();
+
+  let parsed: any = null;
+  try {
+    parsed = parser.parseSync(text);
+  } catch (err) {
+    throw new Error(`DXF 解析失败 (${filePath}): ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!parsed) {
+    throw new Error(`DXF 解析失败：无法识别的文件内容 (${filePath})`);
+  }
+
+  const entities: DxfEntity[] = (parsed.entities || []).map(wrapEntity);
+
+  // 图层表
+  const layerTable = parsed.tables?.layer?.layers || {};
+  const layerList: DxfEntity[] = Object.values(layerTable).map((l: any) => ({
+    dxf: {
+      name: l.name,
+      color: l.color ?? l.colorIndex ?? 7,
+      linetype: l.lineType || 'CONTINUOUS',
+      lineweight: l.lineWeight ?? -1,
+      off: !!l.off,
+      lock: !!l.frozen,
+    },
+  }));
+
+  // 块定义
+  const blockList: DxfBlock[] = Object.values(parsed.blocks || {}).map((b: any) => ({
+    dxf: { name: b.name },
+    *[Symbol.iterator](): Iterator<DxfEntity> {
+      for (const ent of b.entities || []) yield wrapEntity(ent);
+    },
+  }));
+
+  return {
+    modelspace: () => new EntityCollection(entities),
+    layers: () => layerList,
+    blocks: () => blockList,
+  };
+}

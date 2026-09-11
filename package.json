@@ -1,0 +1,38 @@
+{
+  "name": "@security-survey/monorepo",
+  "version": "0.0.1",
+  "private": true,
+  "description": "安防图纸勘点设计工具 Monorepo",
+  "scripts": {
+    "dev": "pnpm --filter @security-survey/desktop dev",
+    "build": "pnpm -r run build",
+    "build:desktop": "pnpm --filter @security-survey/desktop build",
+    "lint": "pnpm -r run lint",
+    "test": "pnpm -r run test",
+    "test:unit": "pnpm -r run test:unit",
+    "test:e2e": "pnpm --filter @security-survey/desktop test:e2e",
+    "format": "prettier --write \"**/*.{ts,tsx,vue,json,md}\"",
+    "prepare": "husky install || true",
+    "changeset": "changeset",
+    "version": "changeset version && pnpm install",
+    "release": "changeset publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-vue": "^9.21.0",
+    "husky": "^9.0.0",
+    "prettier": "^3.2.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.2.0",
+    "@changesets/cli": "^2.27.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@11.22.0"
+}

@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@security-survey/shared-types/*": ["packages/shared-types/src/*"],
+      "@security-survey/cad-parser/*": ["packages/cad-parser/src/*"],
+      "@security-survey/cad-renderer/*": ["packages/cad-renderer/src/*"],
+      "@security-survey/device-lib/*": ["packages/device-lib/src/*"],
+      "@security-survey/wiring-engine/*": ["packages/wiring-engine/src/*"],
+      "@security-survey/exporter/*": ["packages/exporter/src/*"]
+    },
+    "types": ["vite/client", "electron", "node"]
+  },
+  "include": ["apps/desktop/src/**/*", "packages/**/src/**/*"],
+  "exclude": ["node_modules", "dist", "dist-electron"]
+}

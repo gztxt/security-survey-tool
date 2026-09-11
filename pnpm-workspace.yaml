@@ -1,0 +1,23 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+onlyBuiltDependencies:
+  - esbuild
+  - vue-demi
+  - electron
+
+neverBuiltDependencies:
+  - canvas
+  - core-js
+  - '@parcel/watcher'
+
+verifyDepsBeforeRun: warn
+
+allowBuilds:
+  esbuild: true
+  electron: true
+  vue-demi: true
+  '@parcel/watcher': false
+  canvas: false
+  core-js: false
