@@ -3,7 +3,9 @@ node_modules/
 
 # 构建产物
 dist/
+dist-electron/
 target/
+release/
 
 # Python
 __pycache__/
@@ -16,3 +18,7 @@ __pycache__/
 *.log
 .env
 .env.*
+
+# 历史备份文件：源码树内不再入库；已 git mv 归档至 _archive/（归档区保留跟踪）
+*.bak-*
+!_archive/**
