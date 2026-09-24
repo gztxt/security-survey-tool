@@ -38,6 +38,12 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      # workspace 包必须先构建出 dist/*.d.ts，否则 desktop 的 `vue-tsc --noEmit`
+      # 会报 Cannot find module '@security-survey/*'（Run #4 的失败点）。
+      # 本命令取自 README「环境与命令」，已在本机 node v24.18.0 + pnpm 11.22.0 实测 rc=0。
+      - name: Build workspace packages
+        run: pnpm -r --filter "./packages/**" build
+
       - name: Build Desktop App
         working-directory: apps/desktop
         run: npm run build
