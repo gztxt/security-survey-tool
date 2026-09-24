@@ -5,6 +5,7 @@ import { useSettingsStore } from '@/stores/settings';
 import { useProjectStore } from '@/stores/project';
 import { useUiStore } from '@/stores/ui';
 import ShepherdTour from '@/components/common/ShepherdTour.vue';
+import GlobalKeys from '@/components/layout/GlobalKeys.vue';
 import { onMounted, onUnmounted } from 'vue';
 
 const settings = useSettingsStore();
@@ -83,6 +84,9 @@ onUnmounted(() => {
       @complete="uiStore.closeTour()"
       @cancel="uiStore.closeTour()"
     />
+
+    <!-- app 级全局快捷键宿主（Ctrl+N/O、F1/F2、Ctrl+, 、Ctrl+A） -->
+    <GlobalKeys />
   </div>
 </template>
 

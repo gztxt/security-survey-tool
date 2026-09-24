@@ -7,7 +7,6 @@
       @viewport-changed="onToolbarViewportChanged"
       @import="onToolbarImport"
       @calibrate="onToolbarCalibrate"
-      @save="onToolbarSave"
     />
 
     <!-- 图纸标签栏 -->
@@ -27,14 +26,13 @@
         :entities="entities"
         :devices="devices"
         :wires="wires"
-        :view-mode="viewMode"
         :snap-enabled="snapEnabled"
         :grid-enabled="gridEnabled"
         @entity-select="onEntitySelect"
         @device-place="onDevicePlace"
         @wire-start="onWireStart"
         @wire-end="onWireEnd"
-        @viewport-change="onViewportChange"
+        @viewport-changed="onViewportChange"
         @context-menu="onCanvasContextMenu"
       />
 
@@ -55,8 +53,23 @@
       <!-- 拖拽导入提示遮罩 -->
       <div v-if="dragOver" class="drop-mask">松开以导入底图（DWG 需转换，推荐 DXF）</div>
 
-      <!-- 空状态 -->
-      <div v-else class="empty-state">
+      <!-- 工作流引导卡片：按当前图纸进度提示下一步（对标 Axis/海康设计工具的任务引导） -->
+      <div v-if="guideCard && !dragOver" class="guide-card">
+        <div class="guide-step">{{ guideCard.step }}</div>
+        <h3 class="guide-title">{{ guideCard.title }}</h3>
+        <p class="guide-desc">{{ guideCard.desc }}</p>
+        <div class="guide-actions">
+          <button v-for="act in guideCard.actions" :key="act.label"
+            class="btn-primary" :class="{ 'is-secondary': act.secondary }"
+            @click="act.run()">
+            {{ act.label }}
+          </button>
+        </div>
+        <p class="guide-tip" v-if="guideCard.tip">{{ guideCard.tip }}</p>
+      </div>
+
+      <!-- 空状态（无图纸） -->
+      <div v-if="!activeDrawing" class="empty-state">
         <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
           <polyline points="14 2 14 8 20 8"></polyline>
@@ -76,23 +89,15 @@
       </div>
     </div>
 
-    <!-- 状态栏 -->
+    <!-- 状态栏（图纸级信息）。
+         坐标与缩放不在此显示：CanvasViewport 自带的画布状态栏才是这两项的真值源
+         （它持有 hover 位置与实时 viewport）。此前外层用 drawing.viewport.worldX 展示
+         坐标，而 worldX 在 ViewportState 里是可选字段、全仓无任何写入点，值恒为
+         undefined ⇒ 模板里 worldX.toFixed() 在渲染期抛 TypeError，Vue 直接把整个
+         DrawingView 卸载：打包应用里画布/工具栏/图纸标签全部消失，只剩空白工作区
+         （真实 AppImage 冒烟 R9 实测，单测因走内存 fixture 未暴露）。 -->
     <div class="status-bar">
       <div class="status-left">
-        <span class="coord-display">
-          <span v-if="activeDrawing && viewport">X: {{ viewport.worldX.toFixed(1) }}  Y: {{ viewport.worldY.toFixed(1) }}</span>
-          <span v-else>X: 0.0  Y: 0.0</span>
-        </span>
-        <span class="divider">|</span>
-        <span class="zoom-display">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-          </svg>
-          <span v-if="viewport">{{ (viewport.zoom * 100).toFixed(0) }}%</span>
-          <span v-else>100%</span>
-        </span>
-        <span class="divider">|</span>
         <span class="entity-count">
           实体: {{ entities?.length || 0 }} | 设备: {{ devices?.length || 0 }} | 线路: {{ wires?.length || 0 }}
         </span>
@@ -118,24 +123,15 @@
         </span>
         <span class="divider">|</span>
         <span class="unit-display">
-          单位: {{ activeDrawing?.calibration?.unit || 'mm' }} ({{ (activeDrawing?.calibration?.scale || 1).toFixed(3) }}:1)
+          比例尺: 1:{{ Math.round(1 / (activeDrawing?.calibration?.scale || 1)) }} ({{ activeDrawing?.calibration?.unit || 'm' }})
         </span>
       </div>
-      <div class="status-right">
-        <span class="view-mode" :title="getViewModeTitle(viewMode)">
-          <svg v-if="viewMode === 'design'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          </svg>
-          <svg v-else-if="viewMode === 'fov'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-            <circle cx="12" cy="12" r="3"></circle>
-          </svg>
-          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-          </svg>
-          {{ getViewModeLabel(viewMode) }}
-        </span>
-      </div>
+      <!-- 状态栏右侧原为"设计/视场/布线视图"徽标，已删除：viewMode 只是本组件
+           的本地 ref，CanvasViewport 声明了 viewMode prop 却从不读取，切换后
+           画布不发生任何变化 ⇒ 假状态。而它的 v/w 按键与画布的"选择 (V)/
+           布线 (W)"工具键双重绑定：按一次 v 同时切"视场视图"（无效果）和
+           选择工具（有效果），用户看到的是快捷键行为诡异。视野显示的真实
+           入口是设备右键"显示视野"，与此无关。坐标读数在画布自己的状态条。 -->
     </div>
 
     <!-- 画布右键菜单 -->
@@ -170,6 +166,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { useProjectStore } from '@/stores/project';
 import { useDeviceStore } from '@/stores/deviceLibrary';
 import { useSettingsStore } from '@/stores/settings';
+import { useUiStore } from '@/stores/ui';
 import DrawingTabs from '@/components/layout/DrawingTabs.vue';
 import CanvasViewport from '@/components/canvas/CanvasViewport.vue';
 import ContextMenu from '@/components/common/ContextMenu.vue';
@@ -184,6 +181,7 @@ import type { Point2D } from '@security-survey/shared-types';
 const projectStore = useProjectStore();
 const deviceStore = useDeviceStore();
 const settingsStore = useSettingsStore();
+const uiStore = useUiStore();
 
 /** 基线导入链（对话框/拖拽/右键/项目树四入口汇聚） */
 const baselineImport = useBaselineImport();
@@ -259,12 +257,96 @@ function captureSnapshotToStore() {
 const activeDrawing = computed(() => projectStore.currentDrawing);
 const entities = computed(() => activeDrawing.value?.entities || []);
 const devices = computed(() => activeDrawing.value?.devices || []);
-const wires = computed(() => activeDrawing.value?.wires || []);
-const viewport = computed(() => activeDrawing.value?.viewport);
+// 线缆真实路径是 wiring.cables（旧代码读 .wires 恒为空，状态栏/空态计数失真）
+const wires = computed(() => activeDrawing.value?.wiring?.cables || []);
 
-const viewMode = ref<'design' | 'fov' | 'wiring'>('design');
-const snapEnabled = ref(true);
-const gridEnabled = ref(true);
+/** 吸附开关：真值在 settingsStore（画布 snapPoint 读它），此处只做读写代理 */
+const snapEnabled = computed({
+  get: () => settingsStore.snapEnabled,
+  set: (v: boolean) => { settingsStore.snapEnabled = v; },
+});
+/** 网格开关：真值在当前图纸 viewport.showGrid（渲染器读它），按图纸各自持久化。
+ *  不读 projectStore.viewport —— 画布写回 drawing.viewport 时不一定刷新该副本。 */
+const gridEnabled = computed({
+  get: () => activeDrawing.value?.viewport?.showGrid ?? true,
+  set: (v: boolean) => {
+    if (activeDrawing.value) {
+      // 只改 drawing.viewport：画布 deep watcher 会 syncViewport 推给渲染器。
+      // 不再调 setViewport —— 它用 store 副本整体覆盖 drawing.viewport，副本可能滞后。
+      projectStore.updateDrawing(activeDrawing.value.id, {
+        viewport: { ...activeDrawing.value.viewport, showGrid: v },
+      });
+    }
+  },
+});
+
+// ============ 工作流引导卡片 ============
+// 无底图 → 引导导入；有底图未校准 → 引导校准；有底图无设备 → 引导布点。
+// 设备就位后不再打扰（步骤条持续可见）。
+interface GuideCard {
+  step: string;
+  title: string;
+  desc: string;
+  actions: Array<{ label: string; secondary?: boolean; run: () => void }>;
+  tip?: string;
+}
+
+const guideDismissed = ref<Set<string>>(new Set(
+  (() => { try { return JSON.parse(localStorage.getItem('guide-dismissed') || '[]'); } catch { return []; } })()
+));
+function dismissGuide(key: string) {
+  guideDismissed.value.add(key);
+  localStorage.setItem('guide-dismissed', JSON.stringify([...guideDismissed.value]));
+}
+
+const guideCard = computed<GuideCard | null>(() => {
+  const d = activeDrawing.value as any;
+  if (!d || calActive.value) return null;
+  // 判定复用 store 里的派生量，不再本地重算 hasBase（曾与 hasBasemap 口径不一致）
+  const hasBase = projectStore.hasBasemap;
+  const deviceCount = d.devices?.length || 0;
+  const key = d.id + ':' + (!hasBase ? 'import' : !d.calibration?.isCalibrated ? 'calibrate' : deviceCount < 2 ? 'place' : 'none');
+  if (guideDismissed.value.has(key)) return null;
+
+  if (!hasBase) {
+    return {
+      step: '第 1 步 · 导入底图',
+      title: '还没有底图',
+      desc: '导入 DWG / DXF / 图片 / PDF 平面图作为勘察底图，之后才能布点与标注线路。',
+      actions: [{ label: '选择文件导入', run: () => onToolbarImport() }],
+      tip: '也可以直接把文件拖进本窗口；没有图纸时可新建空白图纸徒手布置。',
+    };
+  }
+  if (!d.calibration?.isCalibrated) {
+    return {
+      step: '第 1 步 · 校准比例尺',
+      title: '校准底图比例尺',
+      desc: '在图上找一段已知长度的尺寸（如轴线间距），点两次再输入实际米数，线长统计才有真实数值。',
+      actions: [
+        { label: '开始校准', run: () => onToolbarCalibrate() },
+        { label: '暂不校准', secondary: true, run: () => dismissGuide(key) },
+      ],
+    };
+  }
+  if (deviceCount < 2) {
+    return {
+      step: '第 2 步 · 添加点位',
+      title: deviceCount === 0 ? '布置设备点位' : '再放一台设备',
+      desc: deviceCount === 0
+        ? '从左侧设备库选择摄像头 / 交换机 / 机柜，双击或拖到图纸上放置。'
+        : '图上只有 1 台设备，线缆需要起止两个端点，再放一台交换机或摄像头即可开始连线。',
+      actions: [
+        {
+          label: '打开设备库布点',
+          run: () => { uiStore.setSidebarTab('devices'); uiStore.setTool('device'); dismissGuide(key); },
+        },
+      ],
+      tip: '拖动中键或空格平移视图，滚轮缩放。',
+    };
+  }
+  return null;
+});
+
 
 const canvasMenu = ref({ visible: false, position: { x: 0, y: 0 }, items: [] as any[] });
 
@@ -348,10 +430,6 @@ function onToolbarCalibrate() {
   cal.start();
 }
 
-function onToolbarSave() {
-  void projectStore.saveProject();
-}
-
 function onToolChanged(t: string) {
   // Toolbar 工具切换：校准态由 cal.active 独立管理，其余工具透传给画布
   if (t === 'calibrate') {
@@ -368,7 +446,10 @@ function onToolbarViewportChanged(vp: any) {
 }
 
 function onAddDrawing() {
-  projectStore.addDrawing({ name: '新建图纸' } as any);
+  // 走 createBlankDrawing：补齐契约字段并切进新页签。
+  // 旧写法 addDrawing({name} as any) 造出一张没有 id 的图纸 —— 页签点不动、
+  // 保存后 .survey 里多一张无 id 图纸，而"新建图纸"是帮助页宣称的功能。
+  projectStore.createBlankDrawing('新建图纸');
 }
 
 function onSwitchDrawing(drawingId: string) {
@@ -499,73 +580,51 @@ function openDrawingProperties() {
 function handleKeydown(e: KeyboardEvent) {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
-  // 全局快捷键
+  // 全局快捷键（项目级：保存/另存为/导出/导入/返回首页 由 ProjectView 统一注册，
+  // 此处只留图纸编辑级键，避免同一键在两处 window 监听器上重复触发）
   if (e.ctrlKey || e.metaKey) {
     switch (e.key.toLowerCase()) {
-      case 'o':
+      // Ctrl+O 曾是"导入底图"的隐藏别名，但设置表/帮助页一致宣称
+      // Ctrl+O = 打开项目（.survey）、Ctrl+I = 导入图纸。项目内按 O 会
+      // 与 GlobalKeys 的"打开项目"同时触发（window 监听各自独立），
+      // 一个键两件事 ⇒ 删除此别名，导入唯一入口是 Ctrl+I / 按钮 / 拖拽。
+      // Ctrl+N 曾是"新建图纸"的隐藏别名，但帮助页与设置快捷键表都宣称
+      // Ctrl+N = 新建项目 ⇒ 在首页按 Ctrl+N 毫无反应（假宣称），进了项目
+      // 又干别的活。现取消此别名：新建图纸的唯一键是 Ctrl+T（DrawingTabs）。
+      // 首页的真实 Ctrl+N/Ctrl+O 由 GlobalKeys 统一注册。
+      case 'k':
+        // 工具栏 title 早就写了 (Ctrl+K)，此前无人注册 ⇒ 补上
         e.preventDefault();
-        triggerFileImport();
-        break;
-      case 's':
-        e.preventDefault();
-        projectStore.saveProject();
-        break;
-      case 'n':
-        e.preventDefault();
-        onAddDrawing();
+        onToolbarCalibrate();
         break;
     }
   }
 
-  // 视图模式切换
+  // 绘图仪级按键（不带修饰键的部分；工具选择键 V/D/W/T/Z 归 CanvasViewport，
+  // 此处不重复处理，曾有的 v/w"视图模式"双重绑定已删除）
   if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-    switch (e.key.toLowerCase()) {
-      case '1':
-        if (!e.shiftKey) { viewMode.value = 'design'; zoomTo(1); }
-        else { zoomFit(); }
-        break;
-      case '2':
-        if (e.shiftKey) { zoomToSelection(); }
-        break;
-      case 'v':
-        viewMode.value = viewMode.value === 'fov' ? 'design' : 'fov';
-        break;
-      case 'w':
-        viewMode.value = viewMode.value === 'wiring' ? 'design' : 'wiring';
-        break;
-      case 'g':
-        gridEnabled.value = !gridEnabled.value;
-        break;
-      case 's':
-        snapEnabled.value = !snapEnabled.value;
-        break;
-      case 'escape':
-        projectStore.cancelWire();
-        emit('device-selected', null);
-        emit('wire-selected', null);
-        emit('entity-selected', null);
-        break;
-    }
+    // 数字键一律按 e.code 判定，不看 e.key：按住 Shift 时主键区数字的
+    // e.key 变成 '!'/@'，旧写法 switch (e.key) case '1' + e.shiftKey 永远
+    // 进不去 ⇒ 帮助表宣称的 Shift+1（适应窗口）/Shift+2（缩放选中）对真实
+    // 键盘是死键（真机 R14k 实测：按 Shift+1 缩放读数纹丝不动）。
+    // code 判定与布局无关，也不再受 Shift 影响。
+    const digit = /^Digit([1-9])$/.exec(e.code || '')?.[1];
+    if (digit === '1' && !e.shiftKey) { zoomTo(1); return; }
+    if ((digit === '1' && e.shiftKey) || e.code === 'Digit0') { zoomFit(); return; }
+    if (digit === '2' && e.shiftKey) { zoomToSelection(); return; }
+    const bareKey = e.key.toLowerCase();
+    if (!e.shiftKey && bareKey === 'g') { gridEnabled.value = !gridEnabled.value; return; }
+    if (!e.shiftKey && bareKey === 's') { snapEnabled.value = !snapEnabled.value; return; }
+      // Escape 唯一所有者是 CanvasViewport（取消布线临时线 + 清选中 + 退
+      // 工具一次收全）。此处曾有第二份 handler：emit 的三个事件全仓无人
+      // 监听（死事件），cancelWire 与画布重复 ⇒ 删除，键位单一所有权。
   }
 }
 
-function getViewModeLabel(mode: string) {
-  const labels: Record<string, string> = {
-    design: '设计',
-    fov: '视场',
-    wiring: '布线',
-  };
-  return labels[mode] || mode;
-}
-
-function getViewModeTitle(mode: string) {
-  const titles: Record<string, string> = {
-    design: '设计模式 (1: 100%, Shift+1: 缩放适应)',
-    fov: '视场分析模式 (V: 切换)',
-    wiring: '布线模式 (W: 切换)',
-  };
-  return titles[mode] || '';
-}
+// 「导入底图」步骤已导入时，步骤条请求直接进入校准取点
+watch(() => uiStore.calibrateRequest, () => {
+  onToolbarCalibrate();
+});
 
 // 监听活动图纸变化，确保标签可见
 watch(() => projectStore.currentDrawingId, async (newId) => {
@@ -595,6 +654,62 @@ watch(() => projectStore.currentDrawingId, async (newId) => {
   color: #1d4ed8;
   font-size: 14px;
   pointer-events: none;
+}
+
+/* 工作流引导卡片：半透明悬浮于画布左上，不遮挡主内容 */
+.guide-card {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 20;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.guide-step {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--primary-color, #3b82f6);
+  letter-spacing: 0.02em;
+}
+
+.guide-title {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text-primary, #111827);
+}
+
+.guide-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary, #6b7280);
+}
+
+.guide-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.guide-actions .btn-primary.is-secondary {
+  background: transparent;
+  color: var(--text-secondary, #6b7280);
+  border: 1px solid var(--border-color, #d1d5db);
+}
+
+.guide-tip {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-tertiary, #9ca3af);
 }
 
 .canvas-area {
@@ -695,8 +810,7 @@ watch(() => projectStore.currentDrawingId, async (newId) => {
 .entity-count,
 .snap-status,
 .grid-status,
-.unit-display,
-.view-mode {
+.unit-display {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -704,14 +818,12 @@ watch(() => projectStore.currentDrawingId, async (newId) => {
 }
 
 .snap-status.active,
-.grid-status.active,
-.view-mode.active {
+.grid-status.active {
   color: #3b82f6;
 }
 
 .snap-status:hover,
-.grid-status:hover,
-.view-mode:hover {
+.grid-status:hover {
   color: var(--text-primary);
   cursor: pointer;
 }

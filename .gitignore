@@ -16,6 +16,8 @@ __pycache__/
 
 # 日志与环境变量
 *.log
+# 例外：wine 验收证据日志（构建/探针实测原始输出，是 BUILD-INFO 结论的可复核依据）
+!releases/**/wine-evidence/*.log
 .env
 .env.*
 

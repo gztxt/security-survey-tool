@@ -92,9 +92,24 @@ function getCategoryIcon(category: string | undefined) {
       h('rect', { x: 3, y: 3, width: 18, height: 18, rx: 2 }),
       h('circle', { cx: 12, cy: 12, r: 4 }),
     ]),
+    // 机柜：立柜 + 分层 U 位
+    rack: () => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2' }, [
+      h('rect', { x: 5, y: 2, width: 14, height: 20, rx: 1.5 }),
+      h('path', { d: 'M5 7h14M5 12h14M5 17h14' }),
+      h('circle', { cx: 16.5, cy: 4.5, r: 0.6, fill: 'currentColor' }),
+      h('circle', { cx: 16.5, cy: 9.5, r: 0.6, fill: 'currentColor' }),
+    ]),
+    door_station: () => icons.access ? icons.access() : icons.default(),
   };
 
-  return icons[category || ''] || icons.default;
+  // 真实 DeviceCategory → 图标别名映射（dome/bullet/ptz… 与 legacy camera 键共存）
+  const alias: Record<string, string> = {
+    dome: 'camera', bullet: 'camera', ptz: 'camera', panoramic: 'camera',
+    thermal: 'sensor', multi: 'camera', fisheye: 'camera',
+    nvr: 'nvr', switch: 'switch', rack: 'rack', door_station: 'door_station',
+  };
+  const key = category ? (alias[category] || category) : '';
+  return (icons as any)[key] || icons.default;
 }
 </script>
 

@@ -50,7 +50,41 @@ function getUserDataPath(...paths: string[]): string {
 
 // 仅允许访问用户数据目录下的白名单子目录，防止 fs IPC 任意路径读写
 // 另允许通过原生对话框明确选择过的路径（dialogApprovedPaths）
-const dialogApprovedPaths = new Set<string>();
+//
+// 这个集合必须落盘：历史缺陷是它只存在内存里 ⇒ 用户把项目保存到"文档"目录后，
+// 下次启动应用时 fs.readFile 会以"拒绝访问允许目录之外的路径"失败，
+// 表现为"项目明明在列表里，点开却说文件读不到"（实测：AppImage 重启后无法重开自己的项目）。
+// 只有用户在对话框里主动选过的路径才进这个清单，语义等同于"用户授权过这些文件"。
+const DIALOG_APPROVED_FILE = 'approved-paths.json';
+const APPROVED_PATHS_LIMIT = 200;
+
+function loadApprovedPaths(): Set<string> {
+  try {
+    const file = getUserDataPath(DIALOG_APPROVED_FILE);
+    if (!existsSync(file)) return new Set<string>();
+    const list = JSON.parse(readFileSync(file, 'utf8'));
+    return new Set(Array.isArray(list) ? list.filter((x): x is string => typeof x === 'string') : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+const dialogApprovedPaths = loadApprovedPaths();
+
+function rememberApprovedPath(filePath: string): void {
+  const resolved = resolve(filePath);
+  if (dialogApprovedPaths.has(resolved)) return;
+  dialogApprovedPaths.add(resolved);
+  try {
+    // 有界清单：防止长期使用后无限膨胀
+    const list = [...dialogApprovedPaths].slice(-APPROVED_PATHS_LIMIT);
+    dialogApprovedPaths.clear();
+    for (const x of list) dialogApprovedPaths.add(x);
+    writeFileSync(getUserDataPath(DIALOG_APPROVED_FILE), JSON.stringify(list), 'utf8');
+  } catch {
+    /* 写不下不影响本次会话内的授权生效 */
+  }
+}
 
 // 安全白名单：允许读取的 CAD 文件扩展名
 const ALLOWED_CAD_EXTENSIONS = new Set(['.dxf', '.dwg', '.pdf', '.png', '.jpg', '.jpeg', '.svg']);
@@ -539,7 +573,7 @@ function registerIpcHandlers(): void {
           rejected.push({ path: p, reason: '文件不存在' });
           continue;
         }
-        dialogApprovedPaths.add(resolved);
+        rememberApprovedPath(resolved);
         granted.push(resolved);
       } catch (e) {
         rejected.push({ path: String(p), reason: e instanceof Error ? e.message : String(e) });
@@ -560,7 +594,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('fs:showOpenDialog', async (_, options: any) => {
     const result = await dialog.showOpenDialog(mainWindow!, options);
     if (!result.canceled) {
-      for (const fp of result.filePaths) dialogApprovedPaths.add(resolve(fp));
+      for (const fp of result.filePaths) rememberApprovedPath(fp);
     }
     return result;
   });
@@ -568,7 +602,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('fs:showSaveDialog', async (_, options: any) => {
     const result = await dialog.showSaveDialog(mainWindow!, options);
     if (!result.canceled && result.filePath) {
-      dialogApprovedPaths.add(resolve(result.filePath));
+      rememberApprovedPath(result.filePath);
     }
     return result;
   });
@@ -651,6 +685,10 @@ async function saveProject(projectData: any, filePath?: string) {
     projectData.updatedAt = Date.now();
     writeFileSync(filePath, JSON.stringify(projectData, null, 2), 'utf8');
     addRecentProject(filePath);
+    // 保存成功后把该路径记入授权清单：否则下次启动读取自己的项目文件会被
+    // assertAllowedPath 拒（"项目在读完之前就打不开"）。显式路径来自渲染进程
+    // 已知的落盘路径（源自对话框/授权），记入清单不扩大授权面。
+    rememberApprovedPath(filePath);
     return { success: true, path: filePath };
   } catch (e) {
     return { success: false, error: String(e) };

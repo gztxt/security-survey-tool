@@ -7,6 +7,7 @@
       </div>
       <div class="header-right">
         <el-button @click="refreshProjects" icon="Refresh" size="small">刷新</el-button>
+        <el-button @click="pickProjectFile" icon="FolderOpened" size="small">打开项目文件</el-button>
         <el-button type="primary" @click="createNewProject" icon="Plus" size="small">新建项目</el-button>
       </div>
     </div>
@@ -26,7 +27,7 @@
           <el-option label="全部" value="" />
           <el-option label="进行中" value="active" />
           <el-option label="已归档" value="archived" />
-          <el-option label="已完成" value="completed" />
+          <el-option label="未保存到磁盘" value="unsaved" />
         </el-select>
         <el-select v-model="filterType" placeholder="类型" size="small" style="width: 180px">
           <el-option label="全部" value="" />
@@ -78,13 +79,15 @@
         :key="project.id"
         class="project-card"
         @click="openProject(project.id)"
-        @contextmenu.prevent="showContextMenu(project, $event)"
       >
         <div class="card-header">
-          <div class="project-icon" :style="{ background: project.color }">
-            <component :is="project.typeIcon" />
+          <div class="project-icon" :style="{ background: typeColor(project.type) }">
+            <el-icon><component :is="typeIcon(project.type)" /></el-icon>
           </div>
-          <div class="card-actions">
+          <!-- @click.stop：卡片整体绑定了"打开项目"，不阻断冒泡时，点"⋯"会先跳进
+               项目页、顺带把刚展开的下拉菜单连同宿主卡片一起卸载 ⇒ 网格视图的
+               复制/导出/归档/删除菜单实际点不到（实测：点触发器后 URL 变成项目页）。 -->
+          <div class="card-actions" @click.stop>
             <el-dropdown trigger="click">
               <el-button size="small" circle link>
                 <el-icon><More /></el-icon>
@@ -94,7 +97,7 @@
                   <el-dropdown-item @click.stop="openProject(project.id)"><el-icon><Edit /></el-icon> 打开</el-dropdown-item>
                   <el-dropdown-item @click.stop="duplicateProject(project.id)"><el-icon><CopyDocument /></el-icon> 复制</el-dropdown-item>
                   <el-dropdown-item @click.stop="exportProject(project.id)"><el-icon><Download /></el-icon> 导出</el-dropdown-item>
-                  <el-dropdown-item divided @click.stop="archiveProject(project.id)"><el-icon><Box /></el-icon> 归档</el-dropdown-item>
+                  <el-dropdown-item divided @click.stop="toggleArchive(project)"><el-icon><Box /></el-icon>{{ project.archived ? '取消归档' : '归档' }}</el-dropdown-item>
                   <el-dropdown-item divided @click.stop="deleteProject(project.id)" class="danger"><el-icon><Delete /></el-icon> 删除</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -119,19 +122,22 @@
           </div>
           <div class="meta-item">
             <el-icon><Link /></el-icon>
-            <span>{{ project.wireCount }} 线路</span>
+            <span>{{ project.cableCount }} 线路</span>
           </div>
         </div>
 
         <div class="card-footer">
-          <el-tag :type="getStatusType(project.status)" size="small" effect="light">
-            {{ getStatusLabel(project.status) }}
+          <el-tag :type="archived(project) ? 'info' : 'success'" size="small" effect="light">
+            {{ archived(project) ? '已归档' : stageLabel(project) }}
           </el-tag>
+          <el-tag v-if="!project.path" type="warning" size="small" effect="plain">未保存</el-tag>
           <span class="updated-time">{{ formatRelativeTime(project.updatedAt) }}</span>
         </div>
 
-        <div v-if="project.progress !== undefined" class="progress-bar">
-          <el-progress :percentage="project.progress" :stroke-width="4" :show-text="false" color="#3b82f6" />
+        <div v-if="!archived(project)" class="progress-bar">
+          <el-tooltip :content="'下一步：' + stageHint(project)" placement="top">
+            <el-progress :percentage="stageProgress(project)" :stroke-width="4" :show-text="false" color="#3b82f6" />
+          </el-tooltip>
         </div>
       </div>
 
@@ -139,7 +145,7 @@
       <div v-if="filteredProjects.length === 0" class="empty-state">
         <el-icon><FolderOpened /></el-icon>
         <h3>{{ searchQuery || filterStatus || filterType ? '没有匹配的项目' : '暂无项目' }}</h3>
-        <p>{{ searchQuery || filterStatus || filterType ? '尝试调整搜索条件' : '点击「新建项目」创建第一个项目' }}</p>
+        <p>{{ searchQuery || filterStatus || filterType ? '尝试调整搜索条件' : '点击「新建项目」创建第一个项目，或用「打开项目文件」载入已有 .survey 项目' }}</p>
         <el-button v-if="!(searchQuery || filterStatus || filterType)" type="primary" @click="createNewProject" icon="Plus">新建项目</el-button>
         <el-button v-else @click="clearFilters" icon="Refresh">清除筛选</el-button>
       </div>
@@ -161,11 +167,10 @@
         :key="project.id"
         class="list-row"
         @click="openProject(project.id)"
-        @contextmenu.prevent="showContextMenu(project, $event)"
       >
         <div class="list-col col-name">
-          <div class="project-icon-sm" :style="{ background: project.color }">
-            <component :is="project.typeIcon" />
+          <div class="project-icon-sm" :style="{ background: typeColor(project.type) }">
+            <el-icon><component :is="typeIcon(project.type)" /></el-icon>
           </div>
           <div class="name-info">
             <span class="name">{{ project.name }}</span>
@@ -175,12 +180,12 @@
         <div class="list-col col-code">{{ project.code || '—' }}</div>
         <div class="list-col col-type">{{ getTypeLabel(project.type) }}</div>
         <div class="list-col col-status">
-          <el-tag :type="getStatusType(project.status)" size="small" effect="light">{{ getStatusLabel(project.status) }}</el-tag>
+          <el-tag :type="archived(project) ? 'info' : 'success'" size="small" effect="light">{{ archived(project) ? '已归档' : stageLabel(project) }}</el-tag>
         </div>
         <div class="list-col col-stats">
           <span class="stat">{{ project.drawingCount }} 图</span>
           <span class="stat">{{ project.deviceCount }} 设备</span>
-          <span class="stat">{{ project.wireCount }} 线</span>
+          <span class="stat">{{ project.cableCount }} 线</span>
         </div>
         <div class="list-col col-time">{{ formatDate(project.updatedAt) }}</div>
         <div class="list-col col-actions">
@@ -198,12 +203,12 @@
     </div>
 
     <!-- 表格视图 -->
-    <el-table v-else-if="viewMode === 'table'" :data="paginatedProjects" border size="small" style="width: 100%" row-key="id" highlight-current-row @row-dblclick="openProject">
+    <el-table v-else-if="viewMode === 'table'" :data="paginatedProjects" border size="small" style="width: 100%" row-key="id" highlight-current-row @row-dblclick="openProjectRow">
       <el-table-column prop="name" label="项目名称" min-width="200" show-overflow-tooltip>
         <template #default="scope">
           <div class="table-name">
-            <div class="project-icon-sm" :style="{ background: scope.row.color }">
-              <component :is="scope.row.typeIcon" />
+            <div class="project-icon-sm" :style="{ background: typeColor(scope.row.type) }">
+              <el-icon><component :is="typeIcon(scope.row.type)" /></el-icon>
             </div>
             <span>{{ scope.row.name }}</span>
           </div>
@@ -217,7 +222,7 @@
       </el-table-column>
       <el-table-column prop="status" label="状态" width="100">
         <template #default="scope">
-          <el-tag :type="getStatusType(scope.row.status)" size="small" effect="light">{{ getStatusLabel(scope.row.status) }}</el-tag>
+          <el-tag :type="archived(scope.row) ? 'info' : 'success'" size="small" effect="light">{{ archived(scope.row) ? '已归档' : stageLabel(scope.row) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="图纸/设备/线路" width="180">
@@ -225,7 +230,7 @@
           <div class="table-stats">
             <span><el-icon><FolderOpened /></el-icon>{{ scope.row.drawingCount }}</span>
             <span><el-icon><Monitor /></el-icon>{{ scope.row.deviceCount }}</span>
-            <span><el-icon><Link /></el-icon>{{ scope.row.wireCount }}</span>
+            <span><el-icon><Link /></el-icon>{{ scope.row.cableCount }}</span>
           </div>
         </template>
       </el-table-column>
@@ -247,30 +252,28 @@
     <div v-if="filteredProjects.length > pageSize" class="pagination">
       <el-pagination
         v-model:current-page="currentPage"
-        :page-size="pageSize"
+        v-model:page-size="pageSize"
         :total="filteredProjects.length"
         layout="prev, pager, next, sizes, total"
         :page-sizes="[12, 24, 48, 96]"
         size="small"
-        @current-change="onPageChange"
       />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
-  Refresh, Plus, Search, More, Edit, CopyDocument, Download, Box, Delete,
-  FolderOpened, Monitor, Link, Grid, List, Clock, Calendar
+  More, Edit, CopyDocument, Download, Box, Delete,
+  FolderOpened, Monitor, Link, Grid, VideoCamera, Lock
 } from '@element-plus/icons-vue';
+import { useProjectStore } from '@/stores/project';
 
 const router = useRouter();
-
-const props = defineProps<{}>();
-const emit = defineEmits<{}>();
+const projectStore = useProjectStore();
 
 const searchQuery = ref('');
 const filterStatus = ref('');
@@ -279,157 +282,154 @@ const filterDateRange = ref<[string, string] | null>(null);
 const viewMode = ref<'grid' | 'list' | 'table'>('grid');
 const sortBy = ref('updated-desc');
 const currentPage = ref(1);
-const pageSize = 12;
-const contextMenu = ref({ visible: false, x: 0, y: 0, project: null as any });
+const pageSize = ref(12);
 
-// 模拟项目数据
-const allProjects = ref<Array<any>>([]);
-
-function generateMockProjects() {
-  const types = [
-    { id: 'integrated-security', label: '标准安防', icon: 'Grid', color: '#3b82f6' },
-    { id: 'video-surveillance', label: '视频监控', icon: 'Monitor', color: '#10b981' },
-    { id: 'perimeter-alarm', label: '周界报警', icon: 'Link', color: '#f59e0b' },
-    { id: 'access-control', label: '门禁考勤', icon: 'Lock', color: '#8b5cf6' },
-  ];
-
-  const statuses = ['active', 'archived', 'completed'];
-
-  const names = [
-    '某小区安防改造项目', '某工业园监控系统', '某学校周界报警', '某办公楼门禁系统',
-    '某仓库智能监控', '某商场安防升级', '某医院安防项目', '某地铁站监控',
-    '某数据中心安防', '某变电站周界', '某隧道监控系统', '某桥梁监控项目',
-  ];
-
-  const projects = [];
-  for (let i = 0; i < 28; i++) {
-    const type = types[i % types.length];
-    const created = new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000);
-    const updated = new Date(created.getTime() + Math.random() * (Date.now() - created.getTime()));
-
-    projects.push({
-      id: `proj-${1000 + i}`,
-      name: names[i % names.length] + (i >= names.length ? ` ${Math.floor(i / names.length) + 1}` : ''),
-      code: `PRJ-${2026}-${String(i + 1).padStart(3, '0')}`,
-      type: type.id,
-      typeIcon: type.icon,
-      typeColor: type.color,
-      color: type.color,
-      description: `这是一个${type.label}项目，包含多个子系统的设计与实施。`,
-      status: statuses[Math.floor(Math.random() * statuses.length)],
-      drawingCount: Math.floor(Math.random() * 10) + 1,
-      deviceCount: Math.floor(Math.random() * 100) + 5,
-      wireCount: Math.floor(Math.random() * 200) + 10,
-      createdAt: created.toISOString(),
-      updatedAt: updated.toISOString(),
-      progress: Math.floor(Math.random() * 100),
-    });
-  }
-  return projects;
-}
+// 真实数据源：项目索引（保存项目时由 store 写入 localStorage:projects-index）。
+// 这里曾经是 generateMockProjects() 编造的 28 个假项目 —— 用户真实保存的项目
+// 一个都不显示，等于整个"打开最近项目"环节是断头路。
+type ProjectItem = Record<string, any>;
+const allProjects = computed<ProjectItem[]>(() => projectStore.projectIndex.map(p => ({ ...p })));
 
 const filteredProjects = computed(() => {
   let result = [...allProjects.value];
 
-  // 搜索
   if (searchQuery.value) {
     const q = searchQuery.value.toLowerCase();
     result = result.filter(p =>
-      p.name.toLowerCase().includes(q) ||
-      p.code.toLowerCase().includes(q) ||
-      p.description.toLowerCase().includes(q)
+      (p.name || '').toLowerCase().includes(q) ||
+      (p.code || '').toLowerCase().includes(q) ||
+      (p.description || '').toLowerCase().includes(q) ||
+      (p.location || '').toLowerCase().includes(q)
     );
   }
 
-  // 状态筛选
-  if (filterStatus.value) {
-    result = result.filter(p => p.status === filterStatus.value);
-  }
+  // 状态 = 归档态 + 是否已落盘。刻意没有"已完成"：数据模型里没有它的真相源，
+  // 一个所有人都能满足或不满足的筛选器是噪音。
+  if (filterStatus.value === 'active') result = result.filter(p => !p.archived);
+  if (filterStatus.value === 'archived') result = result.filter(p => !!p.archived);
+  if (filterStatus.value === 'unsaved') result = result.filter(p => !p.path);
 
-  // 类型筛选
   if (filterType.value) {
-    result = result.filter(p => p.type === filterType.value);
+    // 无类型的历史项目归入"自定义"，与 getTypeLabel 的兜底口径一致
+    result = result.filter(p => (p.type || 'custom') === filterType.value);
   }
 
-  // 日期范围筛选
   if (filterDateRange.value) {
     const [start, end] = filterDateRange.value;
     result = result.filter(p => {
-      const d = p.updatedAt.split('T')[0];
+      const d = String(p.updatedAt).slice(0, 10);
       return d >= start && d <= end;
     });
   }
 
-  // 排序
+  const ts = (p: any) => new Date(p.updatedAt).getTime() || 0;
+  const cts = (p: any) => (typeof p.createdAt === 'number' ? p.createdAt : new Date(p.createdAt).getTime()) || 0;
   switch (sortBy.value) {
-    case 'updated-desc':
-      result.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-      break;
-    case 'updated-asc':
-      result.sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
-      break;
-    case 'created-desc':
-      result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      break;
-    case 'created-asc':
-      result.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-      break;
-    case 'name-asc':
-      result.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-      break;
-    case 'name-desc':
-      result.sort((a, b) => b.name.localeCompare(a.name, 'zh-CN'));
-      break;
+    case 'updated-desc': result.sort((a, b) => ts(b) - ts(a)); break;
+    case 'updated-asc': result.sort((a, b) => ts(a) - ts(b)); break;
+    case 'created-desc': result.sort((a, b) => cts(b) - cts(a)); break;
+    case 'created-asc': result.sort((a, b) => cts(a) - cts(b)); break;
+    case 'name-asc': result.sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh-CN')); break;
+    case 'name-desc': result.sort((a, b) => String(b.name).localeCompare(String(a.name), 'zh-CN')); break;
   }
 
   return result;
 });
 
 const paginatedProjects = computed(() => {
-  const start = (currentPage.value - 1) * pageSize;
-  return filteredProjects.value.slice(start, start + pageSize);
+  const start = (currentPage.value - 1) * pageSize.value;
+  return filteredProjects.value.slice(start, start + pageSize.value);
 });
 
-function getTypeLabel(type: string) {
-  const map: Record<string, string> = {
-    'integrated-security': '标准安防',
-    'video-surveillance': '视频监控',
-    'perimeter-alarm': '周界报警',
-    'access-control': '门禁考勤',
-    'custom': '自定义',
+watch([searchQuery, filterStatus, filterType, filterDateRange, sortBy, pageSize], () => {
+  // 换筛选条件或换每页条数后，旧页码可能已越界（表现为"列表空白但计数说共 30 个"）
+  currentPage.value = 1;
+});
+
+// ============ 展示辅助 ============
+
+const TYPE_LABELS: Record<string, string> = {
+  'integrated-security': '标准安防',
+  'video-surveillance': '视频监控',
+  'perimeter-alarm': '周界报警',
+  'access-control': '门禁考勤',
+  'custom': '自定义',
+};
+function getTypeLabel(type?: string) {
+  return TYPE_LABELS[type || ''] || '自定义';
+}
+function typeIcon(type?: string) {
+  const map: Record<string, any> = {
+    'integrated-security': Grid,
+    'video-surveillance': VideoCamera,
+    'perimeter-alarm': Link,
+    'access-control': Lock,
   };
-  return map[type] || type;
+  return map[type || ''] || FolderOpened;
+}
+function typeColor(type?: string) {
+  const map: Record<string, string> = {
+    'integrated-security': '#3b82f6',
+    'video-surveillance': '#10b981',
+    'perimeter-alarm': '#f59e0b',
+    'access-control': '#8b5cf6',
+  };
+  return map[type || ''] || '#64748b';
 }
 
-function getStatusLabel(status: string) {
-  const map: Record<string, string> = {
-    'active': '进行中',
-    'archived': '已归档',
-    'completed': '已完成',
-  };
-  return map[status] || status;
+function archived(p: any) {
+  return !!p.archived;
 }
 
-function getStatusType(status: string) {
-  const map: Record<string, 'success' | 'info' | 'warning' | 'danger'> = {
-    'active': 'success',
-    'archived': 'info',
-    'completed': 'warning',
-  };
-  return map[status] || 'info';
+/**
+ * 项目阶段：与 store.workflowStep 同一口径（校准 → ≥2 设备 → 有线缆），
+ * 区别是这里按"全部图纸"聚合，而 workflowStep 针对当前图纸。
+ * 索引里有 calibratedDrawingCount/deviceCount/cableCount，够算且是落盘真值，
+ * 不需要（也不应该）凭 updatedAt 猜。
+ */
+function stageOf(p: any): 'basemap' | 'devices' | 'wiring' | 'export' {
+  if (!p.calibratedDrawingCount) return 'basemap';
+  if (!p.deviceCount || p.deviceCount < 2) return 'devices';
+  if (!p.cableCount) return 'wiring';
+  return 'export';
+}
+const STAGE_LABELS = { basemap: '导入底图', devices: '添加点位', wiring: '标注线路', export: '生成导出' } as const;
+const STAGE_HINTS: Record<string, string> = {
+  basemap: '还有图纸未导入底图/校准，长度数据不可信',
+  devices: '底图就绪，开始布置摄像头/交换机/机柜',
+  wiring: '画线标注网络线路走向',
+  export: '四步就绪，可生成图纸与材料表',
+};
+function stageLabel(p: any) {
+  return STAGE_LABELS[stageOf(p)];
+}
+function stageHint(p: any) {
+  return STAGE_HINTS[stageOf(p)];
+}
+function stageProgress(p: any) {
+  return { basemap: 25, devices: 50, wiring: 75, export: 100 }[stageOf(p)];
 }
 
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return '—';
   return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+/**
+ * 相对时间依赖"现在是几点"，而 Vue 只会追踪显式读取的响应式源。
+ * 读一下 tick 把它纳入依赖，"刷新"按钮才有实际作用（否则点了什么都不变，
+ * 又是一个只弹 toast 的假按钮）。
+ */
+const tick = ref(Date.now());
+
 function formatRelativeTime(dateStr: string) {
+  void tick.value;
   const d = new Date(dateStr);
-  const now = new Date();
-  const diff = now.getTime() - d.getTime();
+  if (isNaN(d.getTime())) return '';
+  const diff = Date.now() - d.getTime();
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-  if (days === 0) return '今天';
+  if (days <= 0) return '今天';
   if (days === 1) return '昨天';
   if (days < 7) return `${days}天前`;
   if (days < 30) return `${Math.floor(days / 7)}周前`;
@@ -437,63 +437,109 @@ function formatRelativeTime(dateStr: string) {
   return `${Math.floor(days / 365)}年前`;
 }
 
+// ============ 动作（全部走 store 真实实现，禁止假成功提示） ============
+
 function createNewProject() {
   router.push({ name: 'ProjectCreate' });
 }
 
-function openProject(projectId: string) {
-  router.push({ name: 'Drawing', params: { projectId } });
+async function openProject(projectId: string) {
+  const res = await projectStore.openProjectById(projectId);
+  if (!res.ok) {
+    ElMessage.warning(res.error || '无法打开该项目');
+    return;
+  }
+  router.push({ name: 'project', params: { id: projectId } });
 }
 
-function duplicateProject(projectId: string) {
-  ElMessage.success('项目已复制，正在打开...');
-  // TODO: 实现复制逻辑
-  setTimeout(() => {
-    router.push({ name: 'ProjectCreate' });
-  }, 500);
+function openProjectRow(row: any) {
+  if (row?.id) openProject(row.id);
 }
 
-function exportProject(projectId: string) {
-  ElMessage.info('导出功能开发中...');
+async function duplicateProject(projectId: string) {
+  const res = await projectStore.duplicateProject(projectId);
+  if (!res.ok) {
+    ElMessage.warning(res.error || '复制失败');
+    return;
+  }
+  ElMessage.success('已复制为副本（尚未保存，保存时会另存为新文件）');
+  router.push({ name: 'project', params: { id: res.newId } });
 }
 
-async function archiveProject(projectId: string) {
-  try {
-    await ElMessageBox.confirm('确定要归档该项目吗？归档后将不在主列表显示，但可在归档视图中查看。', '确认归档', {
-      confirmButtonText: '归档',
-      cancelButtonText: '取消',
-      type: 'warning',
-    });
-    ElMessage.success('项目已归档');
-    // TODO: 调用 API 归档
-  } catch {}
+async function exportProject(projectId: string) {
+  const res = await projectStore.exportProject(projectId);
+  if (!res.ok) ElMessage.warning(res.error || '导出失败');
+  else ElMessage.success('项目文件已开始下载（.survey.json）');
+}
+
+async function toggleArchive(p: any) {
+  if (!p.archived) {
+    try {
+      await ElMessageBox.confirm('归档后项目从"进行中"列表隐藏，随时可取消归档。不影响磁盘文件。', '确认归档', {
+        confirmButtonText: '归档', cancelButtonText: '取消', type: 'warning',
+      });
+    } catch { return; }
+  }
+  if (projectStore.setProjectArchived(p.id, !p.archived)) {
+    ElMessage.success(p.archived ? '已取消归档' : '已归档');
+  } else {
+    ElMessage.error('项目已不在列表中，请刷新');
+  }
 }
 
 async function deleteProject(projectId: string) {
+  const item = allProjects.value.find(p => p.id === projectId);
+  if (!item) return;
+  // 说清楚"删的是列表记录，不是磁盘文件"，否则用户会以为工程被连带删除（或反过来以为磁盘文件也没了）
+  const where = item.path ? `磁盘上的项目文件不会被删除：${item.path}` : '该项目还没有磁盘文件，只有一条列表记录';
   try {
-    await ElMessageBox.confirm('删除后不可恢复，确定要删除该项目吗？', '确认删除', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'error',
+    await ElMessageBox.confirm(`将从项目列表移除「${item.name}」。${where}。此操作不可恢复。`, '确认删除', {
+      confirmButtonText: '删除', cancelButtonText: '取消', type: 'error',
     });
-    allProjects.value = allProjects.value.filter(p => p.id !== projectId);
-    ElMessage.success('项目已删除');
-  } catch {}
+  } catch { return; }
+  projectStore.deleteProject(projectId);
+  if (item.path) ElMessage.success('已从列表删除（磁盘上的 .survey 文件未删除，如需清理请手动删除该文件）');
+  else ElMessage.success('项目已删除');
 }
 
-function showContextMenu(project: any, event: MouseEvent) {
-  contextMenu.value = {
-    visible: true,
-    x: event.clientX,
-    y: event.clientY,
-    project,
-  };
+/** 载入一个磁盘上的 .survey 项目文件（此前全站没有"打开已有文件"入口） */
+async function pickProjectFile() {
+  const api = (window as any).api;
+  if (!api?.fs?.showOpenDialog) {
+    ElMessage.warning('当前环境不支持文件对话框，请在应用内打开');
+    return;
+  }
+  try {
+    const res = await api.fs.showOpenDialog({
+      title: '打开项目文件',
+      filters: [{ name: '勘点项目', extensions: ['survey'] }],
+    });
+    // 主进程透传 dialog.showOpenDialog 的结果，字段名是 filePaths（不是 paths）
+    const path = res?.canceled ? null : (res?.filePaths?.[0] || null);
+    if (!path) return;
+    const text = await api.fs.readFile(path);
+    if (!text) throw new Error('无法读取文件');
+    const project = JSON.parse(text);
+    if (!project?.drawings) throw new Error('不是有效的勘点项目文件');
+    if (projectStore.isDirty) {
+      ElMessage.warning('当前项目有未保存的修改，请先保存后再打开');
+      return;
+    }
+    await projectStore.loadProject(path);
+    router.push({ name: 'project', params: { id: project.id } });
+  } catch (e: any) {
+    ElMessage.error(`打开失败：${e?.message || e}`);
+  }
 }
 
 function refreshProjects() {
-  // TODO: 从后端/存储重新加载
+  // 数据源是响应式 computed，本来就会自动更新；刷新按钮只做一次显式重读，
+  // 顺手把相对时间（"3天前"）这类依赖当前时刻的文案重新求值。
+  tick.value = Date.now();
   ElMessage.success('已刷新');
 }
+
+
 
 function clearFilters() {
   searchQuery.value = '';
@@ -502,14 +548,6 @@ function clearFilters() {
   filterDateRange.value = null;
   currentPage.value = 1;
 }
-
-function onPageChange(page: number) {
-  currentPage.value = page;
-}
-
-onMounted(() => {
-  allProjects.value = generateMockProjects();
-});
 </script>
 
 <style scoped>

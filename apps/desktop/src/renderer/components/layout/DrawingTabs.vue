@@ -26,7 +26,7 @@
           </span>
           <span class="tab-title" :title="drawing.name">{{ drawing.name || '未命名图纸' }}</span>
           <span v-if="drawing.dirty" class="dirty-indicator" title="未保存">●</span>
-          <button class="tab-close" @click.stop="closeDrawing(drawing.id)" aria-label="关闭">
+          <button class="tab-close" @click.stop="requestCloseDrawing(drawing.id)" aria-label="关闭">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -68,6 +68,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
+import { ElMessageBox } from 'element-plus';
 import { useProjectStore } from '@/stores/project';
 import ContextMenu from '@/components/common/ContextMenu.vue';
 
@@ -110,6 +111,27 @@ function closeDrawing(drawingId: string) {
   emit('drawing-close', drawingId);
 }
 
+/**
+ * "关闭图纸"的真实语义是删除图纸（store.removeDrawing 直接 splice，
+ * 图纸上的设备/线缆一起没了），属于不可轻率触发的破坏性操作。
+ * 键盘 Ctrl+W 与右键"关闭/关闭其他/关闭右侧"统一走此确认；
+ * 确认后一次撤销步（removeDrawing 在历史栈内），Ctrl+Z 可回。
+ */
+async function requestCloseDrawing(drawingId: string) {
+  const d = drawings.value.find(item => item.id === drawingId);
+  const name = d?.name || '未命名图纸';
+  try {
+    await ElMessageBox.confirm(
+      `「${name}」及其上的全部设备与线路将被删除（可用 Ctrl+Z 撤销一次）。确定关闭吗？`,
+      '关闭图纸',
+      { type: 'warning', confirmButtonText: '删除并关闭', cancelButtonText: '取消' },
+    );
+  } catch {
+    return; // 用户取消
+  }
+  closeDrawing(drawingId);
+}
+
 function addDrawing() {
   emit('drawing-add');
 }
@@ -146,21 +168,41 @@ function showTabContextMenu(drawing: any, event: MouseEvent) {
   };
 }
 
-function onTabMenuSelect(action: string, data: any) {
+async function onTabMenuSelect(action: string, data: any) {
   tabMenu.value.visible = false;
   switch (action) {
     case 'close':
-      closeDrawing(data.id);
+      void requestCloseDrawing(data.id);
       break;
     case 'close-others':
-      for (const d of drawings.value) {
-        if (d.id !== data.id) closeDrawing(d.id);
+      {
+        const others = drawings.value.filter(d => d.id !== data.id);
+        if (others.length) {
+          try {
+            await ElMessageBox.confirm(
+              `将删除其他 ${others.length} 张图纸及其全部内容（可用 Ctrl+Z 撤销）。确定吗？`,
+              '关闭其他图纸',
+              { type: 'warning', confirmButtonText: '删除并关闭', cancelButtonText: '取消' },
+            );
+            for (const d of others) closeDrawing(d.id);
+          } catch { /* 取消 */ }
+        }
       }
       break;
     case 'close-right':
-      const currentIdx = drawings.value.findIndex(d => d.id === data.id);
-      for (let i = currentIdx + 1; i < drawings.value.length; i++) {
-        closeDrawing(drawings.value[i].id);
+      {
+        const currentIdx = drawings.value.findIndex(d => d.id === data.id);
+        const right = drawings.value.slice(currentIdx + 1);
+        if (right.length) {
+          try {
+            await ElMessageBox.confirm(
+              `将删除右侧 ${right.length} 张图纸及其全部内容（可用 Ctrl+Z 撤销）。确定吗？`,
+              '关闭右侧图纸',
+              { type: 'warning', confirmButtonText: '删除并关闭', cancelButtonText: '取消' },
+            );
+            for (const d of right) closeDrawing(d.id);
+          } catch { /* 取消 */ }
+        }
       }
       break;
     case 'rename':
@@ -193,7 +235,20 @@ onUnmounted(() => {
 });
 
 function handleKeydown(e: KeyboardEvent) {
+  // 输入框/标签重命名等文本语境里不劫持按键（Ctrl+S 保存等让给编辑器）
+  const t = e.target as HTMLElement | null;
+  if (t && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t.isContentEditable)) return;
   if (e.ctrlKey || e.metaKey) {
+    // Ctrl+1~9：切到第 N 个图纸（帮助表宣称，此前无人注册）
+    if (!e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key)) {
+      const idx = Number(e.key) - 1;
+      const target = drawings.value[idx];
+      if (target) {
+        e.preventDefault();
+        switchDrawing(target.id);
+      }
+      return;
+    }
     switch (e.key) {
       case 't':
       case 'T':
@@ -203,7 +258,10 @@ function handleKeydown(e: KeyboardEvent) {
       case 'w':
       case 'W':
         e.preventDefault();
-        if (activeDrawingId.value) closeDrawing(activeDrawingId.value);
+        // closeDrawing → store.removeDrawing 是直接 splice：无确认即丢一张
+        // 图纸的全部设备/线缆，且 .survey 只在下次保存才落盘。宣称"关闭
+        // 当前图纸标签页"不能等于"静默删除图纸"，补确认。
+        if (activeDrawingId.value) void requestCloseDrawing(activeDrawingId.value);
         break;
       case 'Tab':
         e.preventDefault();
@@ -248,7 +306,15 @@ function ensureTabVisible(drawingId: string) {
 
 <style scoped>
 .drawing-tabs {
-  height: 100%;
+  /**
+   * 本组件挂在 DrawingView 的纵向 flex 列里（工具栏 / 标签栏 / 画布 / 状态栏）。
+   * 此前根元素写 height:100%：百分比按父容器全高（~778px）解析，36px 的标签条
+   * 实际占掉整屏高，把 .canvas-area 挤成 0px —— 打包应用实测 main-canvas
+   * getBoundingClientRect().height === 0，画布存在但完全不可见、不可点
+   * （真实 AppImage 冒烟用几何探针发现；jsdom 无布局引擎，永远测不出这一类）。
+   * 标签条高度真相在 .tabs-container（36px），根元素只需按内容收缩。
+   */
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
 }

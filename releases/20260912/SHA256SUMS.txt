@@ -1,0 +1,3 @@
+3b67309f07c0e00546a329f737e94b481dc3f3ca36c79d14275f4e52d2f46382  安防勘点设计工具 0.0.1.exe
+9db51aae7e905c88cfc84a3351f5e75b877afc33eff597f1bc89fbbf6574887c  安防勘点设计工具 Setup 0.0.1.exe
+13cf30c0af2bceb116371b3f03d26fe014023925ae9e2df1f028ae070a990a5a  安防勘点设计工具 Setup 0.0.1.exe.blockmap

@@ -1,15 +1,19 @@
 /**
  * 比例尺校准链（决策 5.2 / AC-3）
  *
- * 两点取距 → scale = 图上距离 / 实际米数 → setCalibration → 通知主进程（回显桩，不阻塞）。
+ * 两点取距 → scale = 图上模型单位 / 实际毫米 → setCalibration → 通知主进程（回显桩，不阻塞）。
  *
- * 单位换算（PRD AC-3.3）：模型坐标单位是 **毫米**，realDistance 以毫米录入，
- * 因此 scale（模型单位/米）= 图上毫米距离 / 实际米数。
+ * 单位换算（PRD AC-3.3）：模型坐标单位是 **毫米**，realDistance 先折算为毫米再参与除法，
+ * 因此 **scale 是无量纲比值**（图上 1 单位 ↔ 实际 1/scale 单位）。
+ * 例：1:100 图纸上量得 100 单位、实测 10m ⇒ scale = 100/10000 = 0.01。
+ *
+ * 任何"模型单位 ↔ 米"的换算一律走 shared-types 的 modelUnitsToMeters / metersToModelUnits，
+ * 不得手写 `* scale`（历史缺陷：线缆长度被放大 scale² 倍，材料表全错）。
+ * 显示工程比例尺用 1/scale，即 "1:N"。
  *
  * 与架构文档的口径差异已记入偏差清单：架构 §5.2 写 `scale = pixelDistance / realDistance`，
- * 本文沿用其"图上距离 / 实际距离"语义，但图上距离取**模型坐标距离（毫米）**而非屏幕像素，
- * 否则缩放窗口会改变 scale。既有消费方（Toolbar/StatusBar/exporter）按 `1/scale`
- * 显示"比例尺 1:N"，本实现与之自洽。
+ * 本文沿用其"图上距离 / 实际距离"语义，但图上距离取**模型坐标距离**而非屏幕像素，
+ * 否则缩放窗口会改变 scale。
  */
 import { ref, computed, readonly } from 'vue';
 import { ElMessage } from 'element-plus';

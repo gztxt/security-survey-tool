@@ -1,7 +1,8 @@
 // 项目状态管理
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { Project, Drawing, DeviceInstance, Cable, CableType, WeakPoint, CableTray, ViewportState, CalibrationData, Point2D } from '@security-survey/shared-types';
+import type { Project, Drawing, DeviceInstance, Cable, CableType, WeakPoint, CableTray, WiringNetwork, ViewportState, CalibrationData, Point2D } from '@security-survey/shared-types';
+import { modelUnitsToMeters } from '@security-survey/shared-types';
 import { rehydrateBasemapEntity } from '@/services/basemapService';
 
 export const useProjectStore = defineStore('project', () => {
@@ -26,14 +27,10 @@ export const useProjectStore = defineStore('project', () => {
   const saving = ref(false);
   const lastSavedAt = ref<number | null>(null);
   const lastSaveError = ref<string | null>(null);
-  const history = ref<any[]>([]);
-  const historyIndex = ref(-1);
-  const maxHistorySize = 50;
   /** 图纸画布快照缓存（drawingId -> dataURL），供主进程导出引擎使用 */
   const drawingSnapshots = ref<Record<string, string>>({});
   /** 打开项目时重水合失败的底图源文件路径（"底图文件已移动"提示用） */
   const basemapMissing = ref<string[]>([]);
-
   // 计算属性
   const currentDrawing = computed(() => {
     if (!currentDrawingId.value) return null;
@@ -60,10 +57,176 @@ export const useProjectStore = defineStore('project', () => {
     return currentDrawing.value.wiring?.trays || [];
   });
 
+  // ============ 工作流步骤派生状态（WorkflowStepper / 引导空态共用）============
+
+  /** 当前图纸是否已有底图：导入过文件，或存在任何图元（CAD 矢量 / BASEMAP 位图） */
+  const hasBasemap = computed(() => {
+    const d = currentDrawing.value as any;
+    if (!d) return false;
+    return !!d.file || (d.entities?.length || 0) > 0;
+  });
+  /** 当前图纸是否已布点 */
+  const hasDevices = computed(() => (currentDrawing.value?.devices?.length || 0) > 0);
+  /** 当前图纸是否已画线路 */
+  const hasCables = computed(() => (currentDrawing.value?.wiring?.cables?.length || 0) > 0);
+  /**
+   * 当前应做的工作流步骤（唯一定义处）。
+   * 步骤条高亮、侧栏面板取舍、引导文案都读它，避免三处各自 if 判断漂移。
+   * 口径：
+   *  - 底图步骤要求"已导入且已校准"：未校准的底图给不出可信长度，线长与材料表都会错。
+   *  - 布点步骤要求"至少 2 台设备"：只有 1 台时根本无法连线，此时提示"去标注线路"
+   *    等于把用户推向一个做不了的动作。
+   */
+  const workflowStep = computed<'basemap' | 'devices' | 'wiring' | 'export'>(() => {
+    if (!hasBasemap.value || !currentDrawing.value?.calibration?.isCalibrated) return 'basemap';
+    if ((currentDrawing.value?.devices?.length || 0) < 2) return 'devices';
+    if (!hasCables.value) return 'wiring';
+    return 'export';
+  });
+  /** 项目内全部图纸是否都完成"底图 + 布点 + 布线"（导出前完整性检查用） */
+  const drawingsProgress = computed(() =>
+    (drawings.value || []).map((d: any) => ({
+      id: d.id,
+      name: d.name,
+      hasBasemap: !!d.file || (d.entities?.length || 0) > 0,
+      hasDevices: (d.devices?.length || 0) > 0,
+      hasCables: (d.wiring?.cables?.length || 0) > 0,
+    }))
+  );
+
   // 动作
   function setDrawingSnapshot(drawingId: string, dataUrl: string) {
     drawingSnapshots.value[drawingId] = dataUrl;
   }
+
+
+  // ============ 撤销 / 重做（结构性快照）============
+  //
+  // 旧实现只记 { type, id } 且 undo/redo 仅移动下标，不反向执行任何动作 ——
+  // 按 Ctrl+Z 什么都不发生，用户会误以为误删能恢复。改为对"当前图纸的布点 +
+  // 布线"做快照：变更前压栈，undo 时整体回填，语义与用户预期一致。
+  // 视口/校准/图层显隐不进历史（高频且非破坏性）。
+
+  interface StructuralSnapshot {
+    drawingId: string;
+    label: string;
+    devices: DeviceInstance[];
+    wiring: WiringNetwork;
+  }
+
+  const undoStack = ref<StructuralSnapshot[]>([]);
+  const redoStack = ref<StructuralSnapshot[]>([]);
+  const maxHistorySize = 50;
+  /** >0 表示处于批量操作内：整批只捕获一步历史 */
+  let historyBatchDepth = 0;
+  let batchSnapshot: StructuralSnapshot | null = null;
+
+  const canUndo = computed(() => undoStack.value.length > 0);
+  const canRedo = computed(() => redoStack.value.length > 0);
+  /** 下一步 undo/redo 的对象描述，供按钮 title 显示 */
+  const undoLabel = computed(() => undoStack.value[undoStack.value.length - 1]?.label ?? '');
+  const redoLabel = computed(() => redoStack.value[redoStack.value.length - 1]?.label ?? '');
+
+  function deepClone<T>(value: T): T {
+    return value === undefined || value === null ? value : JSON.parse(JSON.stringify(value)) as T;
+  }
+
+  function emptyWiring(drawing: Drawing): WiringNetwork {
+    return {
+      id: `${drawing.id}-wiring`,
+      drawingId: drawing.id,
+      weakPoints: [],
+      trays: [],
+      cables: [],
+      topology: [],
+    };
+  }
+
+  function takeSnapshot(label: string): StructuralSnapshot | null {
+    const d = currentDrawing.value;
+    if (!d) return null;
+    return {
+      drawingId: d.id,
+      label,
+      devices: deepClone(d.devices ?? []),
+      wiring: deepClone(d.wiring ?? emptyWiring(d)),
+    };
+  }
+
+  function pushSnapshot(snapshot: StructuralSnapshot | null) {
+    if (!snapshot) return;
+    undoStack.value.push(snapshot);
+    if (undoStack.value.length > maxHistorySize) undoStack.value.shift();
+    redoStack.value = [];
+  }
+
+  /** 包裹一次结构性变更：变更前捕获快照；处于批量内时交由 runBatched 捕获 */
+  function withHistory<T>(label: string, fn: () => T): T {
+    if (historyBatchDepth > 0) return fn();
+    pushSnapshot(takeSnapshot(label));
+    return fn();
+  }
+
+  /** 把多个变更合并成一步历史（如批量删除选中项、自动布线批量落盘） */
+  function runBatched<T>(label: string, fn: () => T): T {
+    const outermost = historyBatchDepth === 0;
+    if (outermost) batchSnapshot = takeSnapshot(label);
+    historyBatchDepth += 1;
+    try {
+      return fn();
+    } finally {
+      historyBatchDepth -= 1;
+      if (outermost) {
+        pushSnapshot(batchSnapshot);
+        batchSnapshot = null;
+      }
+    }
+  }
+
+  function restoreSnapshot(snapshot: StructuralSnapshot): boolean {
+    const d = drawings.value.find(item => item.id === snapshot.drawingId);
+    if (!d) return false;
+    d.devices = deepClone(snapshot.devices);
+    d.wiring = deepClone(snapshot.wiring);
+    d.updatedAt = Date.now();
+    markDirty();
+    return true;
+  }
+
+  /** 撤销最近一次结构性变更，返回是否真的撤销了 */
+  function undo(): boolean {
+    const snapshot = undoStack.value[undoStack.value.length - 1];
+    if (!snapshot) return false;
+    // 历史按图纸隔离：图纸不匹配（已切换或已删除）时不跨图纸回滚
+    if (currentDrawingId.value !== snapshot.drawingId) return false;
+    const current = takeSnapshot(snapshot.label);
+    const target = drawings.value.find(item => item.id === snapshot.drawingId);
+    if (!target) { undoStack.value.pop(); return false; }
+    undoStack.value.pop();
+    if (current) redoStack.value.push(current);
+    return restoreSnapshot(snapshot);
+  }
+
+  /** 重做：把最近一次 undo 掉的状态再放回去 */
+  function redo(): boolean {
+    const snapshot = redoStack.value[redoStack.value.length - 1];
+    if (!snapshot) return false;
+    if (currentDrawingId.value !== snapshot.drawingId) return false;
+    const target = drawings.value.find(item => item.id === snapshot.drawingId);
+    if (!target) { redoStack.value.pop(); return false; }
+    const current = takeSnapshot(snapshot.label);
+    redoStack.value.pop();
+    if (current) undoStack.value.push(current);
+    return restoreSnapshot(snapshot);
+  }
+
+  function clearHistory() {
+    undoStack.value = [];
+    redoStack.value = [];
+    batchSnapshot = null;
+    historyBatchDepth = 0;
+  }
+
 
   async function loadProject(projectId: string) {
     const data = await window.api.fs.readFile(projectId);
@@ -74,6 +237,8 @@ export const useProjectStore = defineStore('project', () => {
     setProject(project);
     projectFilePath.value = projectId;
     persistPathMapping(project.id, projectId);
+    markProjectOpened(project.id);
+    syncIndexPath(project.id, projectId);
     return project;
   }
 
@@ -296,6 +461,23 @@ export const useProjectStore = defineStore('project', () => {
     name: string;
     drawingCount: number;
     deviceCount: number;
+    /** 全项目线缆总数（含井道/桥架不计入） */
+    cableCount: number;
+    /** 已导入底图且已校准的图纸张数：用于列出"这个项目走到哪一步"，不靠猜 */
+    calibratedDrawingCount: number;
+    /** 最近一次成功落盘的绝对路径；无此路径则无法从列表重开项目 */
+    path?: string;
+    /** 台账字段快照，来自 project.meta，供项目列表展示与筛选 */
+    code?: string;
+    type?: string;
+    description?: string;
+    location?: string;
+    designer?: string;
+    createdAt?: number;
+    /** 归档态。刻意只有 true/false 两态：数据模型里不存在"已完成"的真相源，故不提供该筛选项 */
+    archived?: boolean;
+    /** 最近一次从磁盘载入的时间戳；从未打开过则回退到 updatedAt */
+    lastOpened?: number;
     updatedAt: string;
   }
 
@@ -313,16 +495,70 @@ export const useProjectStore = defineStore('project', () => {
     localStorage.setItem('projects-index', JSON.stringify(projectIndex.value));
   }
 
+  /**
+   * 写入/更新索引项。
+   * 合并而非覆盖：归档态等只在索引里存在的信息，若被 touchIndex 抹掉，
+   * 项目保存一次就"自动取消归档"，属于隐蔽的行为倒退。
+   */
   function touchIndex(project: Project) {
+    const prev = projectIndex.value.find(p => p.id === project.id);
+    const meta = (project as any).meta || {};
     const item: ProjectIndexItem = {
       id: project.id,
       name: project.name,
       drawingCount: project.drawings?.length || 0,
       deviceCount: (project.drawings || []).reduce((n, d) => n + (d.devices?.length || 0), 0),
+      cableCount: (project.drawings || []).reduce((n, d) => n + (d.wiring?.cables?.length || 0), 0),
+      calibratedDrawingCount: (project.drawings || []).filter((d: any) => d.calibration?.isCalibrated).length,
+      // path 是"能否重开这个项目"的关键：没有它，项目列表点进去只能是空画布
+      path: projectFilePath.value || loadPathMapping(project.id) || prev?.path,
+      code: meta.code,
+      type: meta.type,
+      description: meta.description,
+      location: meta.location,
+      designer: meta.designer,
+      createdAt: project.createdAt,
+      archived: prev?.archived,
+      lastOpened: prev?.lastOpened,
       updatedAt: new Date().toISOString(),
     };
-    projectIndex.value = [item, ...projectIndex.value.filter(p => p.id !== project.id)].slice(0, 20);
+    projectIndex.value = [item, ...projectIndex.value.filter(p => p.id !== project.id)].slice(0, 50);
     persistIndex();
+  }
+
+  /** 让索引项的 path 与刚成功的落盘路径一致（loadProject/save 之后调用）。 */
+  function syncIndexPath(projectId: string, filePath: string) {
+    const idx = projectIndex.value.findIndex(p => p.id === projectId);
+    if (idx < 0 || projectIndex.value[idx].path === filePath) return;
+    projectIndex.value = projectIndex.value.map((p, i) => (i === idx ? { ...p, path: filePath } : p));
+    persistIndex();
+  }
+
+  /** 记一次"打开过"，供首页最近项目排序与展示。失败不影响载入流程。 */
+  function markProjectOpened(projectId: string) {
+    const idx = projectIndex.value.findIndex(p => p.id === projectId);
+    if (idx < 0) return;
+    const ts = Date.now();
+    projectIndex.value = projectIndex.value.map((p, i) => (i === idx ? { ...p, lastOpened: ts } : p));
+    persistIndex();
+  }
+
+  /** 只清"最近打开"标记，保留项目本身。旧实现是 settingsStore.clearRecentProjects()
+   *  —— 它 removeItem('projects-index')，也就是把整个项目列表清空，名不副实且危险。*/
+  function clearRecentOpens() {
+    if (!projectIndex.value.some(p => p.lastOpened)) return false;
+    projectIndex.value = projectIndex.value.map((p: any) => ({ ...p, lastOpened: undefined }));
+    persistIndex();
+    return true;
+  }
+
+  /** 归档/取消归档。归档是索引层属性：不改项目文件内容，避免为元信息重写整份图纸 JSON */
+  function setProjectArchived(projectId: string, archived: boolean) {
+    const idx = projectIndex.value.findIndex(p => p.id === projectId);
+    if (idx < 0) return false;
+    projectIndex.value = projectIndex.value.map((p, i) => (i === idx ? { ...p, archived } : p));
+    persistIndex();
+    return true;
   }
 
   const recentProjects = computed(() => projectIndex.value);
@@ -352,26 +588,98 @@ export const useProjectStore = defineStore('project', () => {
     setProject(project);
   }
 
-  function duplicateProject(projectId: string) {
+  /**
+   * 复制索引项。刻意剥掉 path：副本与原项目共享同一路径的话，
+   * 第一次保存副本就会覆盖掉原项目的文件。无 path ⇒ 保存时必然弹对话框另存。
+   */
+  /**
+   * 复制项目：生成一份完整图纸内容的新项目并立即打开它。
+   *
+   * 旧实现只往索引里塞了一条"看起来像项目"的记录（没有 drawings），
+   * 用户以为复制成功，点进去是空项目 —— 假成功。
+   *
+   * 副本刻意不带 path：与原项目共享路径的话，第一次保存就会覆盖原文件。
+   * path 为空 ⇒ 保存时必然弹"另存为"，符合预期。
+   * 图纸 id 保持不变：项目内自洽引用，跨项目不冲突，重键反而牵连 wiring 端点。
+   */
+  async function duplicateProject(projectId: string): Promise<{ ok: boolean; error?: string; newId?: string }> {
     const src = projectIndex.value.find(p => p.id === projectId);
-    if (!src) return;
-    projectIndex.value = [
-      { ...src, id: 'proj-' + Date.now(), name: src.name + ' (副本)', updatedAt: new Date().toISOString() },
-      ...projectIndex.value,
-    ];
-    persistIndex();
+    if (!src) return { ok: false, error: '项目不在列表中' };
+
+    let source: Project | null = null;
+    if (currentProject.value?.id === projectId) {
+      // 不能走 buildSavePayload：那会剥离内嵌底图（imageData），
+      // 复制出来的项目就没有底图了 —— 用户会得到一个"图纸背景消失"的副本。
+      source = JSON.parse(JSON.stringify(currentProject.value)) as Project;
+    } else if (src.path) {
+      try {
+        const text = await window.api.fs.readFile(src.path);
+        if (!text) return { ok: false, error: '读取原项目文件失败' };
+        source = JSON.parse(text) as Project;
+        // 磁盘上的 .survey 刻意不存内嵌底图（体积治理），复制前按 sourcePath 重新栅格化，
+        // 否则副本同样是"没有底图"的项目。
+        basemapMissing.value = await rehydrateBasemaps(source);
+      } catch (e: any) {
+        return { ok: false, error: `读取原项目文件失败：${e?.message || e}` };
+      }
+    } else {
+      return { ok: false, error: '原项目尚未保存到磁盘，无法复制其内容' };
+    }
+
+    const now = Date.now();
+    const newId = 'proj-' + now;
+    const copy: Project = {
+      ...source,
+      id: newId,
+      name: `${source.name} (副本)`.slice(0, 100),
+      createdAt: now,
+      updatedAt: now,
+      drawings: (source.drawings || []).map((d: any) => ({ ...d, projectId: newId })),
+    } as Project;
+    (copy as any).meta = { ...((source as any).meta || {}), code: ((source as any).meta?.code ? (source as any).meta.code + '-COPY' : '') };
+
+    if (isDirty.value) {
+      // 复制会切换当前项目，未保存改动会随之丢失，必须先提示，不能静默覆盖
+      return { ok: false, error: '当前项目有未保存的修改，请先保存后再复制' };
+    }
+
+    // setProject 已把 projectFilePath 重置为该 id 的落盘路径（副本没有 ⇒ null）
+    setProject(copy);
+    return { ok: true, newId };
   }
 
-  function exportProject(projectId: string) {
+  /**
+   * 导出一份项目（浏览器下载通道，非工程图纸导出）。
+   * 旧实现只在"该项目正好是当前打开项目"时才动作，且失败时静默返回，
+   * 项目列表里对未打开的项目点导出 = 毫无反应。改为按索引路径读取后下载。
+   */
+  async function exportProject(projectId: string): Promise<{ ok: boolean; error?: string }> {
+    const item = projectIndex.value.find(p => p.id === projectId);
+    if (!item) return { ok: false, error: '项目不在列表中' };
+
+    let text: string;
     if (currentProject.value?.id === projectId) {
-      const blob = new Blob([JSON.stringify(currentProject.value, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${currentProject.value.name}.survey.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      text = JSON.stringify(buildSavePayload(currentProject.value), null, 2);
+    } else {
+      if (!item.path) return { ok: false, error: '该项目尚未保存到磁盘，无可导出内容' };
+      try {
+        const data = await window.api.fs.readFile(item.path);
+        if (!data) return { ok: false, error: '读取项目文件失败' };
+        text = data;
+      } catch (e: any) {
+        return { ok: false, error: `读取项目文件失败：${e?.message || e}` };
+      }
     }
+
+    const safeName = item.name.replace(/[\\/:*?"<>|]/g, '_');
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${safeName}.survey.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    return { ok: true };
   }
 
   function deleteProject(projectId: string) {
@@ -379,15 +687,38 @@ export const useProjectStore = defineStore('project', () => {
     persistIndex();
   }
 
+  /**
+   * 从项目列表重开一个项目（按索引 id）。这是"打开项目"的唯一真相路径：
+   * 列表页、首页最近项目、仪表盘都走它，避免各处自己拼 loadProject 参数。
+   *
+   * 三种失败原因必须分开报，因为用户下一步动作完全不同：
+   * 未落盘 → 去保存；文件没了 → 去找/重新导入；当前有未保存改动 → 先处理。
+   */
+  async function openProjectById(projectId: string): Promise<{ ok: boolean; error?: string }> {
+    const item = projectIndex.value.find(p => p.id === projectId);
+    if (!item) return { ok: false, error: '项目不在列表中，可能已被删除' };
+    const path = item.path || loadPathMapping(projectId);
+    if (!path) return { ok: false, error: '该项目尚未保存到磁盘，请先在项目内保存' };
+    if (isDirty.value && currentProject.value?.id !== projectId) {
+      return { ok: false, error: '当前项目有未保存的修改，请先保存或撤销' };
+    }
+    try {
+      await loadProject(path);
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: `读取项目文件失败：${e?.message || e}（文件可能已被移动或删除）` };
+    }
+  }
+
   function setProject(project: Project) {
     currentProject.value = project;
     drawings.value = project.drawings || [];
-    if (drawings.value.length > 0 && !currentDrawingId.value) {
-      currentDrawingId.value = drawings.value[0].id;
-    }
+    // 切换项目时旧的 currentDrawingId 不属于新项目，必须校验后再复用，
+    // 否则画布会指向一张不存在的图纸（表现为空白 + 各种"当前图纸"取值为空）。
+    const stillExists = !!currentDrawingId.value && drawings.value.some(d => d.id === currentDrawingId.value);
+    if (!stillExists) currentDrawingId.value = drawings.value[0]?.id || null;
     isDirty.value = false;
-    history.value = [];
-    historyIndex.value = -1;
+    clearHistory();
     // 恢复上次落盘路径（若有），使"保存"无需再次弹对话框
     projectFilePath.value = loadPathMapping(project.id);
     lastSaveError.value = null;
@@ -402,8 +733,7 @@ export const useProjectStore = defineStore('project', () => {
     projectFilePath.value = null;
     lastSaveError.value = null;
     basemapMissing.value = [];
-    history.value = [];
-    historyIndex.value = -1;
+    clearHistory();
   }
 
   function setCurrentDrawing(drawingId: string) {
@@ -416,11 +746,48 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   function addDrawing(drawing: Drawing) {
+    // 入口归一化：页签键、当前图纸、磁盘契约全都以 drawing.id 为锚。
+    // 此前调用方可以塞进一张没有 id 的图纸（Ctrl+T「新建图纸」正是如此），
+    // 结果是那张页签点不动（setCurrentDrawing 找不到它），保存后还会往
+    // .survey 里落一张无 id 的图纸。宁可在这里补齐，也不让半张图纸流到下游。
+    if (!drawing.id) drawing.id = `drawing-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+    if (!drawing.name) drawing.name = '未命名图纸';
+    if (typeof drawing.order !== 'number') drawing.order = drawings.value.length;
     drawings.value.push(drawing);
     if (currentProject.value) {
       currentProject.value.drawings = drawings.value;
       markDirty();
     }
+  }
+
+  /**
+   * 新建一张可用的空白图纸并立即进入。
+   * 与裸 addDrawing 的区别：补齐 shared-types 要求的全部字段（缺一个就可能
+   * 在渲染或保存时炸），并把当前页签切过去 —— 「新建图纸」若只是尾部多出
+   * 一张无人停留的页签，用户看到的仍是旧图纸。
+   */
+  function createBlankDrawing(name = '新建图纸'): string {
+    const id = `drawing-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+    const now = Date.now();
+    const drawing = {
+      id,
+      projectId: currentProject.value?.id || '',
+      name,
+      floor: name.match(/^\d+|^[A-Za-z]+\d*/)?.[0] || '',
+      order: drawings.value.length,
+      file: null,
+      calibration: { isCalibrated: false, point1: { x: 0, y: 0 }, point2: { x: 0, y: 0 }, realDistance: 0, scale: 1, unit: 'm' },
+      layers: [],
+      entities: [],
+      viewport: { transform: { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }, center: { x: 0, y: 0 }, zoom: 1, showGrid: true, showRuler: true },
+      devices: [],
+      wiring: { id: `${id}-wiring`, drawingId: id, weakPoints: [], trays: [], cables: [], topology: [] },
+      createdAt: now,
+      updatedAt: now,
+    } as unknown as Drawing;
+    addDrawing(drawing);
+    setCurrentDrawing(id);
+    return id;
   }
 
   function removeDrawing(drawingId: string) {
@@ -463,34 +830,62 @@ export const useProjectStore = defineStore('project', () => {
 
   function addDevice(device: DeviceInstance) {
     if (currentDrawing.value) {
-      currentDrawing.value.devices = [...(currentDrawing.value.devices || []), device];
-      markDirty();
+      withHistory(`添加设备 ${device.label || device.id}`, () => {
+        currentDrawing.value!.devices = [...(currentDrawing.value!.devices || []), device];
+        markDirty();
+      });
     }
   }
 
+  /** 属性面板编辑：位置/名称/型号等一次性提交，纳入历史 */
   function updateDevice(deviceId: string, updates: Partial<DeviceInstance>) {
-    if (currentDrawing.value) {
-      const idx = currentDrawing.value.devices?.findIndex(d => d.id === deviceId) ?? -1;
-      if (idx >= 0) {
-        currentDrawing.value.devices![idx] = { ...currentDrawing.value.devices![idx], ...updates };
-        markDirty();
-      }
-    }
+    if (!currentDrawing.value) return;
+    const idx = currentDrawing.value.devices?.findIndex(d => d.id === deviceId) ?? -1;
+    if (idx < 0) return;
+    withHistory('修改设备属性', () => {
+      currentDrawing.value!.devices![idx] = { ...currentDrawing.value!.devices![idx], ...updates };
+      markDirty();
+    });
+  }
+
+  /** 画布拖拽中的高频位置更新：不进历史，由拖拽结束时 commitDevicePositions 收一步 */
+  function updateDevicePosition(deviceId: string, position: Point2D) {
+    const idx = currentDrawing.value?.devices?.findIndex(d => d.id === deviceId) ?? -1;
+    if (idx < 0 || !currentDrawing.value) return;
+    currentDrawing.value.devices![idx] = { ...currentDrawing.value.devices![idx], position };
+    markDirty();
+  }
+
+  /** 拖拽/批量移动结束后调用，把"移动前"状态压入历史 */
+  function commitDevicePositions(label: string, before: Record<string, Point2D>) {
+    const d = currentDrawing.value;
+    if (!d) return;
+    pushSnapshot({
+      drawingId: d.id,
+      label,
+      devices: (d.devices || []).map(dev => ({ ...dev, position: { ...(before[dev.id] ?? dev.position) } })),
+      wiring: deepClone(d.wiring ?? emptyWiring(d)),
+    });
   }
 
   function removeDevice(deviceId: string) {
     if (currentDrawing.value) {
-      currentDrawing.value.devices = currentDrawing.value.devices?.filter(d => d.id !== deviceId) || [];
-      markDirty();
+      const name = currentDrawing.value.devices?.find(d => d.id === deviceId)?.label || deviceId;
+      withHistory(`删除设备 ${name}`, () => {
+        currentDrawing.value!.devices = currentDrawing.value!.devices?.filter(d => d.id !== deviceId) || [];
+        markDirty();
+      });
     }
   }
 
   function addCable(cable: Cable) {
     if (currentDrawing.value) {
-      const wiring = currentDrawing.value.wiring || { id: '', drawingId: '', weakPoints: [], trays: [], cables: [], topology: [] };
-      wiring.cables = [...(wiring.cables || []), cable];
-      currentDrawing.value.wiring = wiring;
-      markDirty();
+      withHistory('添加线路', () => {
+        const wiring = currentDrawing.value!.wiring || { id: '', drawingId: '', weakPoints: [], trays: [], cables: [], topology: [] };
+        wiring.cables = [...(wiring.cables || []), cable];
+        currentDrawing.value!.wiring = wiring;
+        markDirty();
+      });
     }
   }
 
@@ -498,8 +893,10 @@ export const useProjectStore = defineStore('project', () => {
     if (currentDrawing.value?.wiring?.cables) {
       const idx = currentDrawing.value.wiring.cables.findIndex(c => c.id === cableId);
       if (idx >= 0) {
-        currentDrawing.value.wiring.cables[idx] = { ...currentDrawing.value.wiring.cables[idx], ...updates };
-        markDirty();
+        withHistory('修改线路', () => {
+          currentDrawing.value!.wiring!.cables[idx] = { ...currentDrawing.value!.wiring!.cables[idx], ...updates };
+          markDirty();
+        });
       }
     }
   }
@@ -510,13 +907,15 @@ export const useProjectStore = defineStore('project', () => {
     for (let i = 1; i < path.length; i++) {
       length += Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
     }
-    const scale = currentDrawing.value?.calibration?.scale || 1;
+    // 统一经 modelUnitsToMeters 换算（scale 为无量纲的 模型单位/实际毫米）。
+    // 旧实现写作 length * scale，把线长放大 scale² 倍，材料表与报价随之全错。
+    const lengthMeters = modelUnitsToMeters(length, currentDrawing.value?.calibration?.scale);
     const cable: Cable = {
       id: 'cable-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
       type,
       path,
-      length: length * scale,
-      correctedLength: length * scale * 1.05,
+      length: lengthMeters,
+      correctedLength: lengthMeters * 1.05,
       startDeviceId: startId,
       endDeviceId: endId,
       trayIds: [],
@@ -539,66 +938,53 @@ export const useProjectStore = defineStore('project', () => {
 
   function removeCable(cableId: string) {
     if (currentDrawing.value?.wiring?.cables) {
-      currentDrawing.value.wiring.cables = currentDrawing.value.wiring.cables.filter(c => c.id !== cableId);
-      markDirty();
+      withHistory('删除线路', () => {
+        currentDrawing.value!.wiring!.cables = currentDrawing.value!.wiring!.cables.filter(c => c.id !== cableId);
+        markDirty();
+      });
     }
   }
 
   function addWell(well: WeakPoint) {
     if (currentDrawing.value) {
-      const wiring = currentDrawing.value.wiring || { id: '', drawingId: '', weakPoints: [], trays: [], cables: [], topology: [] };
-      wiring.weakPoints = [...(wiring.weakPoints || []), well];
-      currentDrawing.value.wiring = wiring;
-      markDirty();
+      withHistory(`添加弱电井 ${well.name || well.id}`, () => {
+        const wiring = currentDrawing.value!.wiring || { id: '', drawingId: '', weakPoints: [], trays: [], cables: [], topology: [] };
+        wiring.weakPoints = [...(wiring.weakPoints || []), well];
+        currentDrawing.value!.wiring = wiring;
+        markDirty();
+      });
     }
+  }
+
+  function removeWell(wellId: string) {
+    if (!currentDrawing.value?.wiring) return;
+    const name = currentDrawing.value.wiring.weakPoints?.find(w => w.id === wellId)?.name || wellId;
+    withHistory(`删除弱电井 ${name}`, () => {
+      currentDrawing.value!.wiring!.weakPoints = currentDrawing.value!.wiring!.weakPoints?.filter(w => w.id !== wellId) || [];
+      markDirty();
+    });
   }
 
   function addTray(tray: CableTray) {
     if (currentDrawing.value) {
-      const wiring = currentDrawing.value.wiring || { id: '', drawingId: '', weakPoints: [], trays: [], cables: [], topology: [] };
-      wiring.trays = [...(wiring.trays || []), tray];
-      currentDrawing.value.wiring = wiring;
+      withHistory('添加桥架', () => {
+        const wiring = currentDrawing.value!.wiring || { id: '', drawingId: '', weakPoints: [], trays: [], cables: [], topology: [] };
+        wiring.trays = [...(wiring.trays || []), tray];
+        currentDrawing.value!.wiring = wiring;
+        markDirty();
+      });
+    }
+  }
+
+  function removeTray(trayId: string) {
+    if (!currentDrawing.value?.wiring) return;
+    withHistory('删除桥架', () => {
+      currentDrawing.value!.wiring!.trays = currentDrawing.value!.wiring!.trays?.filter(t => t.id !== trayId) || [];
       markDirty();
-    }
+    });
   }
 
-  // 撤销/重做
-  function pushHistory(action: any) {
-    history.value = history.value.slice(0, historyIndex.value + 1);
-    history.value.push(action);
-    if (history.value.length > maxHistorySize) {
-      history.value.shift();
-    } else {
-      historyIndex.value = history.value.length - 1;
-    }
-  }
-
-  function undo() {
-    if (historyIndex.value >= 0) {
-      const action = history.value[historyIndex.value];
-      historyIndex.value--;
-      // 执行反向操作（实际应用中需要完整的命令模式）
-      return action;
-    }
-    return null;
-  }
-
-  function redo() {
-    if (historyIndex.value < history.value.length - 1) {
-      historyIndex.value++;
-      const action = history.value[historyIndex.value];
-      return action;
-    }
-    return null;
-  }
-
-  function canUndo() {
-    return historyIndex.value >= 0;
-  }
-
-  function canRedo() {
-    return historyIndex.value < history.value.length - 1;
-  }
+  // 撤销/重做：见上文"结构性快照"实现（withHistory / runBatched / undo / redo）
 
   function markDirty() {
     isDirty.value = true;
@@ -639,8 +1025,6 @@ export const useProjectStore = defineStore('project', () => {
     saving,
     lastSavedAt,
     lastSaveError,
-    history,
-    historyIndex,
     drawingSnapshots,
     basemapMissing,
     currentDrawing,
@@ -648,10 +1032,16 @@ export const useProjectStore = defineStore('project', () => {
     projectCables,
     projectWells,
     projectTrays,
+    hasBasemap,
+    hasDevices,
+    hasCables,
+    workflowStep,
+    drawingsProgress,
     setProject,
     clearProject,
     setDrawingSnapshot,
     loadProject,
+    openProjectById,
     rehydrateBasemaps,
     saveProject,
     saveProjectAs,
@@ -661,6 +1051,7 @@ export const useProjectStore = defineStore('project', () => {
     applyImportedDrawings,
     setCurrentDrawing,
     addDrawing,
+    createBlankDrawing,
     removeDrawing,
     updateDrawing,
     setViewport,
@@ -681,15 +1072,26 @@ export const useProjectStore = defineStore('project', () => {
     getProjectStats,
     importProject,
     duplicateProject,
+    setProjectArchived,
+    clearRecentOpens,
+    projectIndex,
     exportProject,
     deleteProject,
     addWell,
     addTray,
-    pushHistory,
+    withHistory,
+    runBatched,
+    clearHistory,
     undo,
     redo,
     canUndo,
     canRedo,
+    undoLabel,
+    redoLabel,
+    removeWell,
+    removeTray,
+    updateDevicePosition,
+    commitDevicePositions,
     markDirty,
     markClean,
     startAutoSave,

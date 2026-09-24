@@ -58,7 +58,7 @@
         <SettingsExport v-if="activeCategory === 'export'" :modelValue="settings.export" @update:modelValue="updateSettings('export', $event)" />
 
         <!-- 快捷键设置 -->
-        <SettingsShortcuts v-if="activeCategory === 'shortcuts'" :modelValue="settings.shortcuts" @update:modelValue="updateSettings('shortcuts', $event)" />
+        <SettingsShortcuts v-if="activeCategory === 'shortcuts'" />
 
         <!-- 高级设置 -->
         <SettingsAdvanced v-if="activeCategory === 'advanced'" :modelValue="settings.advanced" @update:modelValue="updateSettings('advanced', $event)" />
@@ -132,7 +132,6 @@ const settings = computed(() => ({
   deviceLibrary: settingsStore.deviceLibrarySettings,
   wiring: settingsStore.wiringSettings,
   export: settingsStore.exportSettings,
-  shortcuts: settingsStore.shortcutSettings,
   advanced: settingsStore.advancedSettings,
 }));
 
@@ -142,7 +141,6 @@ const drawingSettings = computed(() => settingsStore.drawingSettings);
 const deviceLibrarySettings = computed(() => settingsStore.deviceLibrarySettings);
 const wiringSettings = computed(() => settingsStore.wiringSettings);
 const exportSettings = computed(() => settingsStore.exportSettings);
-const shortcutSettings = computed(() => settingsStore.shortcutSettings);
 const advancedSettings = computed(() => settingsStore.advancedSettings);
 
 // 图标组件

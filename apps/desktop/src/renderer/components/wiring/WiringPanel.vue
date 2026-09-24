@@ -185,12 +185,15 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { useProjectStore } from '@/stores/project';
+import { useUiStore } from '@/stores/ui';
+import { modelUnitsToMeters } from '@security-survey/shared-types';
 import { wiringEngine } from '@security-survey/wiring-engine';
 import TopologyNode from './TopologyNode.vue';
 
 const projectStore = useProjectStore();
+const uiStore = useUiStore();
 
 const props = defineProps<{
   width?: number;
@@ -241,9 +244,21 @@ function autoWireAll() {
   wiringEngine.setCableTrays(trays.value as any);
   wiringEngine.setCables(cables.value as any);
   const result = wiringEngine.autoWire();
-  for (const cable of result.cables) {
-    projectStore.addCable(cable);
-  }
+  // 引擎按模型坐标测量路径，返回的 length 是模型单位；Cable.length 契约是米，
+  // 必须在落库前换算（旧实现直接落库，导致未换算的毫米数被当米统计）。
+  const scale = projectStore.currentDrawing?.calibration?.scale;
+  // 一次自动布线 = 一步历史：Ctrl+Z 一次即可整批撤销
+  projectStore.runBatched(`自动布线 ${result.cables.length} 根线缆`, () => {
+    for (const cable of result.cables) {
+      const lengthMeters = modelUnitsToMeters(cable.length, scale);
+      projectStore.addCable({
+        ...cable,
+        length: lengthMeters,
+        correctedLength: modelUnitsToMeters(cable.correctedLength, scale),
+        slackRatio: cable.length > 0 ? cable.correctedLength / cable.length : 1.15,
+      });
+    }
+  });
   ElMessage.success(`自动布线完成，生成 ${result.cables.length} 根线缆`);
 }
 
@@ -276,29 +291,40 @@ function addWell() {
   selectWell(well.id);
 }
 
+async function confirmRemove(tip: string, fn: () => void) {
+  try {
+    // Electron 不渲染 window.confirm，统一走 ElMessageBox
+    await ElMessageBox.confirm(tip, '确认删除', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' });
+  } catch { return; }
+  fn();
+}
+
 function removeWell(wellId: string) {
-  if (confirm('确定删除该弱电井吗？')) {
-    // projectStore.removeWell(wellId);
+  confirmRemove('确定删除该弱电井吗？关联线缆需重新布线。', () => {
+    projectStore.removeWell(wellId);
     if (selectedWellId.value === wellId) selectedWellId.value = null;
-  }
+  });
 }
 
 function startTrayDrawing() {
-  // 触发画布进入桥架绘制模式
+  // 让画布进入桥架绘制模式：工具真值在 uiStore.activeTool，
+  // 画布（CanvasViewport）与工具栏高亮都读它 ⇒ 点这里后画布即处于可点状态，
+  // 工具栏"桥架"按钮同时高亮，用户能看清自己已经切到工具。
+  uiStore.setTool('tray');
 }
 
 function removeTray(trayId: string) {
-  if (confirm('确定删除该桥架吗？')) {
-    // projectStore.removeTray(trayId);
+  confirmRemove('确定删除该桥架吗？', () => {
+    projectStore.removeTray(trayId);
     if (selectedTrayId.value === trayId) selectedTrayId.value = null;
-  }
+  });
 }
 
 function removeCable(cableId: string) {
-  if (confirm('确定删除这条线缆吗？')) {
+  confirmRemove('确定删除这条线缆吗？', () => {
     projectStore.removeCable(cableId);
     if (selectedCableId.value === cableId) selectedCableId.value = null;
-  }
+  });
 }
 
 function getWellTypeLabel(type: string) {

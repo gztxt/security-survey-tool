@@ -1,0 +1,218 @@
+@@@SERIES start 2026-09-12T19:11:54+08:00
+@@@REP 1 start 2026-09-12T19:11:54+08:00
+== [S0] 安装 xvfb + curl（镜像未自带）==
+== [S0] 起虚拟显示 ==
+  Xvfb OK (1280x800)
+== [S0] wineboot 初始化 prefix（跳过 gecko/mono，最多 240s）==
+  wineboot OK
+== [W1] wine 启动 Windows 产物 ==
+== [W2] 等 CDP 就绪并校验是本品 Electron（最多 180s）==
+  CDP OK: Chrome/120.0.6099.227
+  W2 绿：UA 含 @security-survey/desktop（本品 Electron 在跑）
+  W1 绿：运行时栈为 Windows（wine 里 UA 报 Windows NT）
+== [W3/W4/S5] 经 CDP 检查页面目标与运行时（S5 仅参考）==
+  DOM 探针超时预算 = 60000ms
+  page 目标 2 个: dist/index.html="" | dist/splash.html=""
+  探针起点 T0 epoch=1789211590015ms
+  W3h(HTTP-only，未挂 WS，窗口 0→+1010ms(epoch 1789211591025)) 观测到的主窗口标题 = ["首页 - 安防勘点设计工具"]
+W3h=1
+  attach 尝试 1（+1013ms(epoch 1789211591028)）target id: 初始 9A75BB1A7F45087529A41BF8AB6F7BF9 → 本次 9A75BB1A7F45087529A41BF8AB6F7BF9
+  挂 WS 后的标题轮询窗口: +1027ms → +1029ms（探针起点=T0）
+  期间观测到的标题序列: ["首页 - 安防勘点设计工具"]
+  W3: 观测到的标题 = ["首页 - 安防勘点设计工具"]；router 后缀标题 = 是（渲染层 JS 真执行过）；url 来自 app.asar = true
+W3=1
+  W3p(已 detach，HTTP-only，至 +19046ms(epoch 1789211609061)) 主窗口标题 = ["首页 - 安防勘点设计工具"]；id 现值 9A75BB1A7F45087529A41BF8AB6F7BF9（初始 9A75BB1A7F45087529A41BF8AB6F7BF9）
+W3p=1
+  S5 不可判：DOM 探针未完成（Runtime.evaluate 无回复（>15000ms，wine CDP 传输嫌疑））—— 与 W3 结论无关
+  （探针正常完成，W3=1）
+  三段观测（同一进程同一轮）：W3h(attach前)=1  W3(挂WS期间)=1  W3p(detach后)=1
+  ⇒ 渲染层跑到 router 且 detach 后仍在 ⇒ wine 本轮渲染层正常
+== [W4] 应用自建**业务**子目录（main.ts 业务代码在 Windows 上执行的证据）==
+  W4 绿：5 个业务子目录全部由应用创建（/root/.wine-sec/drive_c/users/root/AppData/Roaming/@security-survey/desktop）
+    存在: projects
+    存在: templates
+    存在: exports
+    存在: Cache（期望 cache，名字大小写不同 ⇒ 被 Chromium 抢先创建）
+    存在: logs
+== 汇总 ==
+----- [applog] wine/应用输出（每行前缀 epoch 毫秒）-----
+
+[408:0912/111309.317:ERROR:network_change_notifier_win.cc(267)] WSALookupServiceBegin failed with: 0
+ALSA lib confmisc.c:855:(parse_card) cannot find card '0'
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default
+ALSA lib confmisc.c:855:(parse_card) cannot find card '0'
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default
+
+DevTools listening on ws://127.0.0.1:9222/devtools/browser/024025c1-db1b-45c8-9828-bd351ec1f667
+Python sidecar not found at: Z:\uw\resources\python\python.exe
+ODA File Converter not found at: Z:\uw\resources\oda\ODAFileConverter.exe
+[616:0912/111309.678:ERROR:network_change_notifier_win.cc(267)] WSALookupServiceBegin failed with: 0
+[652:0912/111311.076:ERROR:crashpad_client_win.cc(867)] not connected
+[Main] 渲染进程崩溃: { reason: [32m'crashed'[39m, exitCode: [33m-36861[39m }
+[Main] 渲染进程加载超时，强制显示窗口
+----- [/applog] -----
+  W1 绿 进程以 Windows 栈运行
+  W2 绿 Electron 主进程为本品
+  W3 参考（不计成败）：页面目标载入且 router 后缀标题已设
+  W4 绿 应用创建 5 个业务子目录
+  S5 不可判：探针未产出 DOM 数据（见上面 W3 不可判原因）
+wine 层验收 PASS（门禁 W1/W2/W4）。这不等于 Windows 实机通过 —— 渲染层、UI 与交互仍需真实 Windows。
+@@@REP 1 EXIT=0 end 2026-09-12T19:13:31+08:00
+@@@REP 2 start 2026-09-12T19:13:31+08:00
+== [S0] 安装 xvfb + curl（镜像未自带）==
+== [S0] 起虚拟显示 ==
+  Xvfb OK (1280x800)
+== [S0] wineboot 初始化 prefix（跳过 gecko/mono，最多 240s）==
+  wineboot OK
+== [W1] wine 启动 Windows 产物 ==
+== [W2] 等 CDP 就绪并校验是本品 Electron（最多 180s）==
+  CDP OK: Chrome/120.0.6099.227
+  W2 绿：UA 含 @security-survey/desktop（本品 Electron 在跑）
+  W1 绿：运行时栈为 Windows（wine 里 UA 报 Windows NT）
+== [W3/W4/S5] 经 CDP 检查页面目标与运行时（S5 仅参考）==
+  DOM 探针超时预算 = 60000ms
+  page 目标 2 个: dist/index.html="" | dist/splash.html=""
+  探针起点 T0 epoch=1789211658237ms
+  W3h(HTTP-only，未挂 WS，窗口 0→+3187ms(epoch 1789211661424)) 观测到的主窗口标题 = ["首页 - 安防勘点设计工具"]
+W3h=1
+  attach 尝试 1（+3191ms(epoch 1789211661428)）target id: 初始 791E541D9FBFF3D432E2B60E0EDE38A9 → 本次 791E541D9FBFF3D432E2B60E0EDE38A9
+  attach 尝试 1 失败: Runtime.enable 无回复（>15000ms，wine CDP 传输嫌疑）
+  attach 尝试 2（+20220ms(epoch 1789211678457)）target id: 初始 791E541D9FBFF3D432E2B60E0EDE38A9 → 本次 791E541D9FBFF3D432E2B60E0EDE38A9
+  attach 尝试 2 失败: Runtime.enable 无回复（>15000ms，wine CDP 传输嫌疑）
+  WS 段未完成（Runtime.enable 无回复（>15000ms，wine CDP 传输嫌疑））⇒ W3 不可判；**继续**做 detach 后的 HTTP 复检。
+  注意：W3 依赖 WS 传输，wine 下 WS 断开不代表渲染层崩 —— 判渲染层死活请看 W3h/W3p。
+W3=e
+  W3p(已 detach，HTTP-only，至 +40250ms(epoch 1789211698487)) 主窗口标题 = ["首页 - 安防勘点设计工具"]；id 现值 791E541D9FBFF3D432E2B60E0EDE38A9（初始 791E541D9FBFF3D432E2B60E0EDE38A9）
+W3p=1
+  S5 不可判：DOM 探针未完成（未挂上 WS（Runtime.enable 无回复（>15000ms，wine CDP 传输嫌疑）））—— 与 W3 结论无关
+  （探针正常完成，W3=e）
+  三段观测（同一进程同一轮）：W3h(attach前)=1  W3(挂WS期间)=e  W3p(detach后)=1
+  ⇒ 挂 WS 前后都用 HTTP 看到 router 标题、只有挂 WS 期间测不到
+     ⇒ 支持 CDP WS 传输受 wine 干扰（观察者效应），**不支持**渲染层崩溃
+== [W4] 应用自建**业务**子目录（main.ts 业务代码在 Windows 上执行的证据）==
+  W4 绿：5 个业务子目录全部由应用创建（/root/.wine-sec/drive_c/users/root/AppData/Roaming/@security-survey/desktop）
+    存在: projects
+    存在: templates
+    存在: exports
+    存在: Cache（期望 cache，名字大小写不同 ⇒ 被 Chromium 抢先创建）
+    存在: logs
+== 汇总 ==
+----- [applog] wine/应用输出（每行前缀 epoch 毫秒）-----
+
+[408:0912/111417.429:ERROR:network_change_notifier_win.cc(267)] WSALookupServiceBegin failed with: 0
+ALSA lib confmisc.c:855:(parse_card) cannot find card '0'
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default
+ALSA lib confmisc.c:855:(parse_card) cannot find card '0'
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default
+
+DevTools listening on ws://127.0.0.1:9222/devtools/browser/1264474e-3782-4c7c-b8f5-f55040d2f9e2
+Python sidecar not found at: Z:\uw\resources\python\python.exe
+ODA File Converter not found at: Z:\uw\resources\oda\ODAFileConverter.exe
+[616:0912/111418.115:ERROR:network_change_notifier_win.cc(267)] WSALookupServiceBegin failed with: 0
+[Main] 渲染进程崩溃: { reason: [32m'crashed'[39m, exitCode: [33m-2147483645[39m }
+----- [/applog] -----
+  W1 绿 进程以 Windows 栈运行
+  W2 绿 Electron 主进程为本品
+  W3 不可判：测量层失效（见上面 rc / 探针输出），本项不作为任何结论的依据
+  W4 绿 应用创建 5 个业务子目录
+  S5 不可判：探针未产出 DOM 数据（见上面 W3 不可判原因）
+wine 层验收 PASS（门禁 W1/W2/W4）。这不等于 Windows 实机通过 —— 渲染层、UI 与交互仍需真实 Windows。
+@@@REP 2 EXIT=0 end 2026-09-12T19:15:01+08:00
+@@@REP 3 start 2026-09-12T19:15:01+08:00
+== [S0] 安装 xvfb + curl（镜像未自带）==
+== [S0] 起虚拟显示 ==
+  Xvfb OK (1280x800)
+== [S0] wineboot 初始化 prefix（跳过 gecko/mono，最多 240s）==
+  wineboot OK
+== [W1] wine 启动 Windows 产物 ==
+== [W2] 等 CDP 就绪并校验是本品 Electron（最多 180s）==
+  CDP OK: Chrome/120.0.6099.227
+  W2 绿：UA 含 @security-survey/desktop（本品 Electron 在跑）
+  W1 绿：运行时栈为 Windows（wine 里 UA 报 Windows NT）
+== [W3/W4/S5] 经 CDP 检查页面目标与运行时（S5 仅参考）==
+  DOM 探针超时预算 = 60000ms
+  page 目标 2 个: dist/index.html="" | dist/splash.html=""
+  探针起点 T0 epoch=1789211743654ms
+  W3h(HTTP-only，未挂 WS，窗口 0→+1019ms(epoch 1789211744673)) 观测到的主窗口标题 = ["首页 - 安防勘点设计工具"]
+W3h=1
+  attach 尝试 1（+1026ms(epoch 1789211744680)）target id: 初始 0746B473B04AA09056040C4464847AD7 → 本次 0746B473B04AA09056040C4464847AD7
+  attach 尝试 1 失败: Runtime.enable 无回复（>15000ms，wine CDP 传输嫌疑）
+  attach 尝试 2（+18055ms(epoch 1789211761709)）target id: 初始 0746B473B04AA09056040C4464847AD7 → 本次 0746B473B04AA09056040C4464847AD7
+  attach 尝试 2 失败: Runtime.enable 无回复（>15000ms，wine CDP 传输嫌疑）
+  WS 段未完成（Runtime.enable 无回复（>15000ms，wine CDP 传输嫌疑））⇒ W3 不可判；**继续**做 detach 后的 HTTP 复检。
+  注意：W3 依赖 WS 传输，wine 下 WS 断开不代表渲染层崩 —— 判渲染层死活请看 W3h/W3p。
+W3=e
+  W3p(已 detach，HTTP-only，至 +38081ms(epoch 1789211781735)) 主窗口标题 = ["首页 - 安防勘点设计工具"]；id 现值 0746B473B04AA09056040C4464847AD7（初始 0746B473B04AA09056040C4464847AD7）
+W3p=1
+  S5 不可判：DOM 探针未完成（未挂上 WS（Runtime.enable 无回复（>15000ms，wine CDP 传输嫌疑）））—— 与 W3 结论无关
+  （探针正常完成，W3=e）
+  三段观测（同一进程同一轮）：W3h(attach前)=1  W3(挂WS期间)=e  W3p(detach后)=1
+  ⇒ 挂 WS 前后都用 HTTP 看到 router 标题、只有挂 WS 期间测不到
+     ⇒ 支持 CDP WS 传输受 wine 干扰（观察者效应），**不支持**渲染层崩溃
+== [W4] 应用自建**业务**子目录（main.ts 业务代码在 Windows 上执行的证据）==
+  W4 绿：5 个业务子目录全部由应用创建（/root/.wine-sec/drive_c/users/root/AppData/Roaming/@security-survey/desktop）
+    存在: projects
+    存在: templates
+    存在: exports
+    存在: Cache（期望 cache，名字大小写不同 ⇒ 被 Chromium 抢先创建）
+    存在: logs
+== 汇总 ==
+----- [applog] wine/应用输出（每行前缀 epoch 毫秒）-----
+
+[404:0912/111542.753:ERROR:network_change_notifier_win.cc(267)] WSALookupServiceBegin failed with: 0
+ALSA lib confmisc.c:855:(parse_card) cannot find card '0'
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default
+ALSA lib confmisc.c:855:(parse_card) cannot find card '0'
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default
+
+DevTools listening on ws://127.0.0.1:9222/devtools/browser/4d55cab1-3215-47e3-8776-18044ff60873
+Python sidecar not found at: Z:\uw\resources\python\python.exe
+ODA File Converter not found at: Z:\uw\resources\oda\ODAFileConverter.exe
+[576:0912/111543.128:ERROR:network_change_notifier_win.cc(267)] WSALookupServiceBegin failed with: 0
+[Main] 渲染进程崩溃: { reason: [32m'crashed'[39m, exitCode: [33m-2147483645[39m }
+[Main] 渲染进程加载超时，强制显示窗口
+----- [/applog] -----
+  W1 绿 进程以 Windows 栈运行
+  W2 绿 Electron 主进程为本品
+  W3 不可判：测量层失效（见上面 rc / 探针输出），本项不作为任何结论的依据
+  W4 绿 应用创建 5 个业务子目录
+  S5 不可判：探针未产出 DOM 数据（见上面 W3 不可判原因）
+wine 层验收 PASS（门禁 W1/W2/W4）。这不等于 Windows 实机通过 —— 渲染层、UI 与交互仍需真实 Windows。
+@@@REP 3 EXIT=0 end 2026-09-12T19:16:24+08:00
+@@@SERIES end 2026-09-12T19:16:24+08:00

@@ -20,6 +20,7 @@ import {
   BBox,
   ViewportState,
 } from '@security-survey/shared-types';
+import { metersToModelUnits } from '@security-survey/shared-types';
 
 import { calculateFieldOfView, generateFovPolygon } from '@security-survey/device-lib';
 import dagre from 'dagre';
@@ -766,9 +767,9 @@ export class Exporter {
 
   private drawScaleBar(ctx: CanvasRenderingContext2D, drawing: Drawing, bounds: BBox): void {
     if (!drawing.calibration?.isCalibrated) return;
-    const scale = drawing.calibration.scale; // 模型单位/米
+    const scale = drawing.calibration.scale; // 无量纲：模型单位/实际毫米
     const barLengthM = 10; // 10米比例尺
-    const barLengthPx = barLengthM * scale;
+    const barLengthPx = metersToModelUnits(barLengthM, scale);
 
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 2;

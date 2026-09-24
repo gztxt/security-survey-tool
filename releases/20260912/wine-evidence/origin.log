@@ -1,0 +1,28 @@
+wineboot rc=0
+主窗口 ws 路径 = /devtools/page/F7BF263ACE6709D57EAD0CBE9FAD8799
+----- 握手：无 Origin -----
+HTTP/1.1 101 WebSocket Protocol Handshake
+Upgrade: WebSocket
+Connection: Upgrade
+Sec-WebSocket-Accept: vT+lguS9QcZa8NV1SSLF5GgZSsE=
+
+�0{"method":"Inspector.targetCrashed","params":{}}
+----- 握手：Origin: null -----
+HTTP/1.1 403 Forbidden
+Content-Length:205
+Content-Type:text/html
+
+Rejected an incoming WebSocket connection from the null origin. Use the command line flag --remote-allow-origins=null to allow connections from this origin or --remote-allow-origins=* to allow all origins.
+----- 握手：Origin: http://127.0.0.1:9222 -----
+HTTP/1.1 403 Forbidden
+Content-Length:239
+Content-Type:text/html
+
+Rejected an incoming WebSocket connection from the http://127.0.0.1:9222 origin. Use the command line flag --remote-allow-origins=http://127.0.0.1:9222 to allow connections from this origin or --remote-allow-origins=* to allow all origins.
+----- 对照：浏览器级 WS 路径 /devtools/browser/bae01056-9c48-4c92-a9fd-05684a514edc（无 Origin） -----
+HTTP/1.1 101 WebSocket Protocol Handshake
+Upgrade: WebSocket
+Connection: Upgrade
+Sec-WebSocket-Accept: eSVUkcX+0XX0bMH88zQrQE/jxwY=
+
+=== done ===

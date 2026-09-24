@@ -20,22 +20,11 @@ export const useSettingsStore = defineStore('settings', () => {
    * 持久化走 localStorage —— 主进程 settings:get/set 目前是空桩，不可依赖。
    */
   const advancedMode = ref(false);
-  const shortcuts = ref<Record<string, string>>({
-    'select': 'V',
-    'pan': 'Space',
-    'zoomIn': '=',
-    'zoomOut': '-',
-    'placeDevice': 'D',
-    'drawWire': 'W',
-    'drawTray': 'T',
-    'addWell': 'Shift+W',
-    'undo': 'Ctrl+Z',
-    'redo': 'Ctrl+Shift+Z',
-    'delete': 'Delete',
-    'copy': 'Ctrl+C',
-    'paste': 'Ctrl+V',
-    'escape': 'Escape',
-  });
+  // 旧版这里有一张 shortcuts 键位表（V/Ctrl+Z/……），但全仓没有任何运行时
+  // 代码读取它 —— 按键散落在各组件硬编码。P1 键位治理已把真相源迁到
+  // src/renderer/keymap.ts（代码常量 + 静态一致性测试），设置页/帮助页均
+  // 由它渲染。这张死表随之删除：留着它只会再次长出一个"改了没人听"的
+  // 假配置面。
 
   function load() {
     const saved = localStorage.getItem('appSettings');
@@ -45,7 +34,7 @@ export const useSettingsStore = defineStore('settings', () => {
         const refs: Record<string, any> = {
           theme, language, autoSaveInterval, snapEnabled,
           gridSize, defaultScale, unit, showGrid, showRuler,
-          canvasBackground, shortcuts, advancedMode,
+          canvasBackground, advancedMode,
         };
         for (const key of Object.keys(refs)) {
           if (parsed[key] !== undefined) refs[key].value = parsed[key];
@@ -66,7 +55,6 @@ export const useSettingsStore = defineStore('settings', () => {
       showGrid: showGrid.value,
       showRuler: showRuler.value,
       canvasBackground: canvasBackground.value,
-      shortcuts: shortcuts.value,
       advancedMode: advancedMode.value,
     }));
   }
@@ -97,11 +85,6 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  function updateShortcut(action: string, key: string) {
-    shortcuts.value[action] = key;
-    save();
-  }
-
   load();
   applyTheme();
 
@@ -130,7 +113,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const wiringSettings = computed(() => ({}));
   const exportSettings = computed(() => ({}));
   const advancedSettings = computed(() => ({ advancedMode: advancedMode.value }));
-  const shortcutSettings = computed(() => shortcuts.value);
 
   function updateSettings(category: string, value: any) {
     if (!value || typeof value !== 'object') return;
@@ -139,9 +121,7 @@ export const useSettingsStore = defineStore('settings', () => {
       defaultScale, unit, showGrid, showRuler, canvasBackground, advancedMode,
     };
     for (const key of Object.keys(value)) {
-      if (category === 'shortcuts' && key === 'shortcuts') {
-        shortcuts.value = { ...shortcuts.value, ...value[key] };
-      } else if (refMap[key]) {
+      if (refMap[key]) {
         refMap[key].value = value[key];
       }
     }
@@ -151,18 +131,6 @@ export const useSettingsStore = defineStore('settings', () => {
   function loadSettings() { load(); }
   function saveSettings() { save(); }
 
-  /** 最近项目（HomeView 使用；实际索引由 project store 维护，此处读同一存储） */
-  const recentProjects = computed<any[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('projects-index') || '[]');
-    } catch {
-      return [];
-    }
-  });
-
-  function clearRecentProjects() {
-    localStorage.removeItem('projects-index');
-  }
   function resetToDefaults() {
     theme.value = 'system';
     language.value = 'zh-CN';
@@ -189,7 +157,6 @@ export const useSettingsStore = defineStore('settings', () => {
     showRuler,
     canvasBackground,
     advancedMode,
-    shortcuts,
     generalSettings,
     canvasSettings,
     drawingSettings,
@@ -197,16 +164,12 @@ export const useSettingsStore = defineStore('settings', () => {
     wiringSettings,
     exportSettings,
     advancedSettings,
-    shortcutSettings,
     setTheme,
     setAdvancedMode,
     toggleAdvancedMode,
-    updateShortcut,
     updateSettings,
     loadSettings,
     saveSettings,
-    recentProjects,
-    clearRecentProjects,
     resetToDefaults,
     load,
     save,

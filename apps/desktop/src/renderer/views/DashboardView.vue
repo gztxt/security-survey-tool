@@ -271,30 +271,41 @@ function createNewProject() {
 }
 
 function importProject() {
-  // 触发文件选择
+  // 触发文件选择（Web 通道的 input[accept] 带 .zip，但项目包不是已实现的能力，去掉以免选了打不开）
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.survey,.zip';
-  input.onchange = (e) => {
+  input.accept = '.survey';
+  input.onchange = async (e) => {
     const file = (e.target as HTMLInputElement).files?.[0];
-    if (file) {
-      projectStore.importProject(file);
+    if (!file) return;
+    try {
+      await projectStore.importProject(file);
+      router.push({ name: 'project', params: { id: (projectStore.currentProject as any)?.id || '' } });
+    } catch (err: any) {
+      ElMessage.error(`导入失败：${err?.message || err}`);
     }
   };
   input.click();
 }
 
 function createFromTemplate() {
-  ElMessage.info('模板功能开发中...');
+  // 模板选择本来就是新建项目表单里的一项，不再另设一个只有 toast 的空按钮
+  router.push({ name: 'ProjectCreate' });
 }
 
 function openSettings() {
   router.push({ name: 'Settings' });
 }
 
-function openProject(projectId: string) {
-  projectStore.loadProject(projectId);
-  router.push({ name: 'Drawing', params: { projectId } });
+async function openProject(projectId: string) {
+  // 旧实现把项目 id 当文件路径喂给 loadProject（loadProject 内部是 fs.readFile(id)），
+  // 必然抛错且没人 catch：点最近项目 = 静默失败。
+  const res = await projectStore.openProjectById(projectId);
+  if (!res.ok) {
+    ElMessage.warning(res.error || '无法打开该项目');
+    return;
+  }
+  router.push({ name: 'project', params: { id: projectId } });
 }
 
 function navigateToProjects() {

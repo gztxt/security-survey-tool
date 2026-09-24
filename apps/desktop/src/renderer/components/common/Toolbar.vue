@@ -1,34 +1,12 @@
-// 工具栏组件
 <template>
-  <div class="toolbar" role="toolbar" aria-label="主工具栏">
-    <div class="toolbar-group">
-      <button class="toolbar-btn" @click="newProject" title="新建项目 (Ctrl+N)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-          <polyline points="14 2 14 8 20 8"></polyline>
-          <line x1="12" y1="18" x2="12" y2="12"></line>
-          <line x1="9" y1="15" x2="15" y2="15"></line>
-        </svg>
-      </button>
-      <button class="toolbar-btn" @click="openProject" title="打开项目 (Ctrl+O)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-        </svg>
-      </button>
-      <button class="toolbar-btn" @click="saveProject" title="保存项目 (Ctrl+S)" :disabled="!projectStore.isDirty || projectStore.saving">
-        <svg v-if="!projectStore.saving" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
-          <polyline points="17 21 17 13 7 13 7 21"></polyline>
-          <polyline points="7 3 7 8 15 8"></polyline>
-        </svg>
-        <svg v-else class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 12a9 9 0 1 1-6.2-8.6"></path>
-        </svg>
-      </button>
-    </div>
-
-    <div class="toolbar-divider"></div>
-
+  <!--
+    工具栏（去重后）：入口分层
+     - 项目级动作（新建/打开/保存/另存为/导出/设置/侧栏折叠）只在 ProjectHeader 出现一次；
+     - 本工具栏只保留"编辑当前图纸"所需动作：导入底图、校准比例尺、绘图工具、视图与吸附。
+    旧版两侧各摆一份新建/打开/保存/导出/设置，且 title 标了并不存在的快捷键
+    （Ctrl+N 实际是"新建图纸"、Ctrl+O 实际是"导入文件"、Ctrl+K/Ctrl+E 未注册）。
+  -->
+  <div class="toolbar" role="toolbar" aria-label="绘图工具栏">
     <div class="toolbar-group">
       <button class="toolbar-btn" @click="importDrawing" title="导入底图（DXF/DWG/图片/PDF）">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -95,13 +73,15 @@
     <div class="toolbar-divider"></div>
 
     <div class="toolbar-group">
-      <button class="toolbar-btn" @click="undo" title="撤销 (Ctrl+Z)" :disabled="!projectStore.canUndo()">
+      <button class="toolbar-btn" @click="undo" :disabled="!projectStore.canUndo"
+        :title="projectStore.undoLabel ? `撤销「${projectStore.undoLabel}」 (Ctrl+Z)` : '无可撤销操作 (Ctrl+Z)'">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M3 7v6h6"></path>
           <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path>
         </svg>
       </button>
-      <button class="toolbar-btn" @click="redo" title="重做 (Ctrl+Shift+Z)" :disabled="!projectStore.canRedo()">
+      <button class="toolbar-btn" @click="redo" :disabled="!projectStore.canRedo"
+        :title="projectStore.redoLabel ? `重做「${projectStore.redoLabel}」 (Ctrl+Shift+Z)` : '无可重做操作 (Ctrl+Shift+Z)'">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 7v6h-6"></path>
           <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"></path>
@@ -161,26 +141,6 @@
       </button>
     </div>
 
-    <div class="toolbar-spacer"></div>
-
-    <div class="toolbar-group">
-      <div class="scale-display" v-if="projectStore.currentDrawing?.calibration?.isCalibrated">
-        <span>比例尺 1:{{ (1/projectStore.currentDrawing.calibration.scale).toFixed(0) }}</span>
-      </div>
-      <button class="toolbar-btn" @click="showExport" title="导出方案 (Ctrl+E)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-          <polyline points="7 10 12 15 17 10"></polyline>
-          <line x1="12" y1="15" x2="12" y2="3"></line>
-        </svg>
-      </button>
-      <button class="toolbar-btn" @click="showSettings" title="设置">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 1 4.6 9a1.65 1.65 0 0 1 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 1-.33 1.82V15a2 2 0 0 1 2 2 2 2 0 0 1-2 2h.09a1.65 1.65 0 0 1 1 1.51 1.65 1.65 0 0 1 1.82.33l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 1-.33-1.82V9a2 2 0 0 1 2-2 2 2 0 0 1 2 2h.09a1.65 1.65 0 0 1 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 1-.33-1.82 1.65 1.65 0 0 1 1.51-1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 1-1 1.51 1.65 1.65 0 0 1-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 1 .33 1.82V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 1-1.51-1 1.65 1.65 0 0 1-1.82-.33l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06-.06a1.65 1.65 0 0 1 1.82-.33H15a2 2 0 0 1 2-2 2 2 0 0 1 2 2z"></path>
-        </svg>
-      </button>
-    </div>
   </div>
 </template>
 
@@ -190,13 +150,11 @@ import { useProjectStore } from '@/stores/project';
 import { useSettingsStore } from '@/stores/settings';
 import { useUiStore } from '@/stores/ui';
 import { useVisibility } from '@/composables/useVisibility';
-import { useRouter } from 'vue-router';
 
 const projectStore = useProjectStore();
 const settingsStore = useSettingsStore();
 const uiStore = useUiStore();
 const { showTool } = useVisibility();
-const router = useRouter();
 
 const tool = computed(() => uiStore.activeTool);
 const viewport = ref(projectStore.viewport);
@@ -209,8 +167,6 @@ const emit = defineEmits<{
   'import': [];
   /** 进入/退出比例尺校准（宿主视图切换 CalibrationOverlay） */
   'calibrate': [];
-  /** 保存项目（宿主视图调 projectStore.saveProject） */
-  'save': [];
 }>();
 
 watch(() => projectStore.viewport, (v) => { viewport.value = v; });
@@ -220,21 +176,6 @@ watch(() => uiStore.activeTool, (t) => { emit('tool-changed', t); });
 
 function setTool(t: 'select' | 'pan' | 'device' | 'wire' | 'tray' | 'well') {
   uiStore.setTool(t);
-}
-
-function newProject() {
-  router.push({ name: 'project-new' });
-}
-
-function openProject() {
-  router.push({ name: 'home' }); // 打开项目选择器
-}
-
-/** 保存：委托 store（内部走主进程 project:save，见决策 4）。不再伪造 markClean */
-async function saveProject() {
-  if (!projectStore.currentProject) return;
-  if (projectStore.saving) return;
-  await projectStore.saveProject();
 }
 
 /** 导入底图：宿主视图（DrawingView）持有 useBaselineImport，这里只发意图 */
@@ -296,14 +237,6 @@ function toggleRuler() {
 function toggleSnap() {
   snapEnabled.value = !snapEnabled.value;
   settingsStore.snapEnabled = snapEnabled.value;
-}
-
-function showExport() {
-  router.push({ name: 'project-export', params: { id: projectStore.currentProject?.id } });
-}
-
-function showSettings() {
-  router.push({ name: 'settings' });
 }
 </script>
 

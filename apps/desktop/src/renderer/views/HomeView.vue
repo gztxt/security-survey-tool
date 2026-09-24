@@ -122,7 +122,7 @@
         <button class="btn btn-text" @click="clearRecent">清空</button>
       </div>
       <div class="project-list">
-        <div class="project-card" v-for="proj in recentProjects" :key="proj.id" @click="openProject(proj.path)">
+        <div class="project-card" v-for="proj in recentProjects" :key="proj.id" @click="openProject(proj.id)">
           <div class="project-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
@@ -130,7 +130,7 @@
           </div>
           <div class="project-info">
             <h4>{{ proj.name }}</h4>
-            <p>{{ formatDate(proj.lastOpened) }}</p>
+            <p>{{ formatDate(proj.lastOpened) }}{{ proj.path ? '' : ' · 未保存到磁盘' }}</p>
           </div>
           <div class="project-action">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -149,37 +149,50 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { useSettingsStore } from '@/stores/settings';
 import { useProjectStore } from '@/stores/project';
+import { ElMessage } from 'element-plus';
 
 const router = useRouter();
 const settingsStore = useSettingsStore();
 const projectStore = useProjectStore();
 
 const advancedMode = computed(() => settingsStore.advancedMode);
-const recentProjects = ref<any[]>([]);
 
-onMounted(() => {
-  recentProjects.value = settingsStore.recentProjects || [];
-});
+/**
+ * 最近打开的项目。数据源是项目索引（与项目列表页同一个），按最近打开时间排序。
+ * 旧实现在这里读 proj.path 并把它当作路由 :id 传下去，且从不加载项目 ——
+ * 点卡片进入的是"当前内存里的项目 + 一个不存在的路由 id"，等于假入口。
+ */
+const recentProjects = computed<any[]>(() =>
+  [...projectStore.projectIndex]
+    .filter((p: any) => !!p.lastOpened)
+    .sort((a: any, b: any) => (b.lastOpened || 0) - (a.lastOpened || 0))
+    .slice(0, 5)
+);
 
 function newProject() {
   router.push({ name: 'project-new' });
 }
 
-function openProject(path?: string) {
-  if (path) {
-    router.push({ name: 'project', params: { id: path } });
-  } else {
+async function openProject(projectId?: string) {
+  if (!projectId) {
     router.push({ name: 'project' });
+    return;
   }
+  const res = await projectStore.openProjectById(projectId);
+  if (!res.ok) {
+    ElMessage.warning(res.error || '无法打开该项目');
+    return;
+  }
+  router.push({ name: 'project', params: { id: projectId } });
 }
 
+/** 只清"最近打开"这一显示层记录，绝不删项目本身（旧实现直接删掉整个项目索引） */
 function clearRecent() {
-  settingsStore.clearRecentProjects();
-  recentProjects.value = [];
+  projectStore.clearRecentOpens();
 }
 
 function formatDate(ts: number) {

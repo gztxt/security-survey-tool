@@ -41,6 +41,19 @@ Object.defineProperty(window, 'localStorage', {
   writable: true,
 });
 
+// jsdom 的 HTMLCanvasElement.getContext 默认抛「Not implemented」（本机 canvas 原生
+// 模块未生效），组件每次重绘都刷一屏无意义堆栈，淹没真实失败信息。
+// 这里注入 no-op 2D 上下文：属性读写放行，方法调用返回 undefined。
+if (typeof HTMLCanvasElement !== 'undefined') {
+  const noopCtx = new Proxy({} as Record<string | symbol, unknown>, {
+    get: (t, p) => (p in t ? t[p] : () => undefined),
+    set: (t, p, v) => { t[p] = v; return true },
+  });
+  HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, _type: string) {
+    return noopCtx as unknown as CanvasRenderingContext2D;
+  } as unknown as typeof HTMLCanvasElement.prototype.getContext;
+}
+
 if (typeof window.matchMedia !== 'function') {
   Object.defineProperty(window, 'matchMedia', {
     value: (query: string) => ({

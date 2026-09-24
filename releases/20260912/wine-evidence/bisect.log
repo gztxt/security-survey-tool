@@ -1,0 +1,204 @@
+@@@SERIES start 2026-09-12T18:06:24+08:00
+@@@CASE v2 rep=1
+== [S0] 安装 xvfb + curl（镜像未自带）==
+== [S0] 起虚拟显示 ==
+  Xvfb OK (1280x800xpixels)
+== [S0] wineboot 初始化 prefix（跳过 gecko/mono，最多 240s）==
+  wineboot OK
+== [W1] wine 启动 Windows 产物 ==
+== [W2] 等 CDP 就绪并校验是本品 Electron（最多 180s）==
+  CDP OK: Chrome/120.0.6099.227
+  W2 绿：UA 含 @security-survey/desktop（本品 Electron 在跑）
+  W1 绿：运行时栈为 Windows（wine 里 UA 报 Windows NT）
+== [W3/W4/S5] 经 CDP 检查页面目标与运行时（S5 仅参考）==
+  page 目标: title="" url=file:///Z:/uw/resources/app.asar/dist/index.html
+  期间观测到的标题序列: ["安防勘点设计工具"]
+  W3: document.title = null；router 后缀标题 = 否（仅静态骨架）；url 来自 app.asar = true
+W3=0
+  W3 红（探针异常）: 探针 超时 15000ms
+W3=0
+  （探针正常完成，W3=0）
+== [W4] 应用自建**业务**子目录（main.ts 业务代码在 Windows 上执行的证据）==
+  W4 绿：5 个业务子目录全部由应用创建（/root/.wine-sec/drive_c/users/root/AppData/Roaming/@security-survey/desktop）
+    存在: projects
+    存在: templates
+    存在: exports
+    存在: Cache（期望 cache，名字大小写不同 ⇒ 被 Chromium 抢先创建）
+    存在: logs
+== 汇总 ==
+  W1 绿 进程以 Windows 栈运行
+  W2 绿 Electron 主进程为本品
+  W3 参考（不计成败）：轮询到超时仍未取到 router 后缀标题
+  W4 绿 应用创建 5 个业务子目录
+  S5 不可判：探针未产出 DOM 数据（见上面 W3 不可判原因）
+wine 层验收 PASS（门禁 W1/W2/W4）。这不等于 Windows 实机通过 —— 渲染层、UI 与交互仍需真实 Windows。
+@@@CASE v2 rep=1 EXIT=0
+@@@CASE v5b rep=1
+== [S0] 安装 xvfb + curl（镜像未自带）==
+== [S0] 起虚拟显示 ==
+  Xvfb OK (1280x800)
+== [S0] wineboot 初始化 prefix（跳过 gecko/mono，最多 240s）==
+  wineboot OK
+== [W1] wine 启动 Windows 产物 ==
+== [W2] 等 CDP 就绪并校验是本品 Electron（最多 180s）==
+  CDP OK: Chrome/120.0.6099.227
+  W2 绿：UA 含 @security-survey/desktop（本品 Electron 在跑）
+  W1 绿：运行时栈为 Windows（wine 里 UA 报 Windows NT）
+== [W3/W4/S5] 经 CDP 检查页面目标与运行时（S5 仅参考）==
+  DOM 探针超时预算 = 15000ms
+  page 目标 2 个: dist/index.html="" | dist/splash.html=""
+  探针起点 T0 epoch=1789207930112ms
+  W3h(HTTP-only，未挂 WS，窗口 0→+2023ms(epoch 1789207932135)) 观测到的主窗口标题 = ["首页 - 安防勘点设计工具"]
+W3h=1
+  探针前置失败: CDP ws 已关闭（渲染进程崩溃？）
+W3=e
+  （探针正常完成，W3=e）
+  三段观测（同一进程同一轮）：W3h(attach前)=1  W3(挂WS期间)=e  W3p(detach后)=e
+  ⇒ 组合 1/e/e：样本累积中，不作单一归因
+== [W4] 应用自建**业务**子目录（main.ts 业务代码在 Windows 上执行的证据）==
+  W4 绿：5 个业务子目录全部由应用创建（/root/.wine-sec/drive_c/users/root/AppData/Roaming/@security-survey/desktop）
+    存在: projects
+    存在: templates
+    存在: exports
+    存在: Cache（期望 cache，名字大小写不同 ⇒ 被 Chromium 抢先创建）
+    存在: logs
+== 汇总 ==
+----- [applog] wine/应用输出（每行前缀 epoch 毫秒）-----
+
+[412:0912/101209.277:ERROR:network_change_notifier_win.cc(267)] WSALookupServiceBegin failed with: 0
+ALSA lib confmisc.c:855:(parse_card) cannot find card '0'
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default
+ALSA lib confmisc.c:855:(parse_card) cannot find card '0'
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default
+
+DevTools listening on ws://127.0.0.1:9222/devtools/browser/068d32be-f7c6-4699-b931-b27410088907
+Python sidecar not found at: Z:\uw\resources\python\python.exe
+ODA File Converter not found at: Z:\uw\resources\oda\ODAFileConverter.exe
+[608:0912/101209.707:ERROR:network_change_notifier_win.cc(267)] WSALookupServiceBegin failed with: 0
+[Main] 渲染进程崩溃: { reason: [32m'crashed'[39m, exitCode: [33m-2147483645[39m }
+[Main] 渲染进程加载超时，强制显示窗口
+----- [/applog] -----
+  W1 绿 进程以 Windows 栈运行
+  W2 绿 Electron 主进程为本品
+  W3 不可判：测量层失效（见上面 rc / 探针输出），本项不作为任何结论的依据
+  W4 绿 应用创建 5 个业务子目录
+  S5 不可判：探针未产出 DOM 数据（见上面 W3 不可判原因）
+wine 层验收 PASS（门禁 W1/W2/W4）。这不等于 Windows 实机通过 —— 渲染层、UI 与交互仍需真实 Windows。
+@@@CASE v5b rep=1 EXIT=0
+@@@CASE v2 rep=2
+== [S0] 安装 xvfb + curl（镜像未自带）==
+== [S0] 起虚拟显示 ==
+  Xvfb OK (1280x800xpixels)
+== [S0] wineboot 初始化 prefix（跳过 gecko/mono，最多 240s）==
+  wineboot OK
+== [W1] wine 启动 Windows 产物 ==
+== [W2] 等 CDP 就绪并校验是本品 Electron（最多 180s）==
+  CDP OK: Chrome/120.0.6099.227
+  W2 绿：UA 含 @security-survey/desktop（本品 Electron 在跑）
+  W1 绿：运行时栈为 Windows（wine 里 UA 报 Windows NT）
+== [W3/W4/S5] 经 CDP 检查页面目标与运行时（S5 仅参考）==
+  page 目标: title="安防勘点设计工具" url=file:///Z:/uw/resources/app.asar/dist/index.html#/
+  期间观测到的标题序列: ["首页 - 安防勘点设计工具"]
+  W3: document.title = "首页 - 安防勘点设计工具"；router 后缀标题 = 是（渲染层 JS 真执行过）；url 来自 app.asar = true
+W3=1
+  W3 红（探针异常）: 探针 超时 15000ms
+W3=0
+  （探针正常完成，W3=0）
+== [W4] 应用自建**业务**子目录（main.ts 业务代码在 Windows 上执行的证据）==
+  W4 绿：5 个业务子目录全部由应用创建（/root/.wine-sec/drive_c/users/root/AppData/Roaming/@security-survey/desktop）
+    存在: projects
+    存在: templates
+    存在: exports
+    存在: Cache（期望 cache，名字大小写不同 ⇒ 被 Chromium 抢先创建）
+    存在: logs
+== 汇总 ==
+  W1 绿 进程以 Windows 栈运行
+  W2 绿 Electron 主进程为本品
+  W3 参考（不计成败）：轮询到超时仍未取到 router 后缀标题
+  W4 绿 应用创建 5 个业务子目录
+  S5 不可判：探针未产出 DOM 数据（见上面 W3 不可判原因）
+wine 层验收 PASS（门禁 W1/W2/W4）。这不等于 Windows 实机通过 —— 渲染层、UI 与交互仍需真实 Windows。
+@@@CASE v2 rep=2 EXIT=0
+@@@CASE v5b rep=2
+== [S0] 安装 xvfb + curl（镜像未自带）==
+== [S0] 起虚拟显示 ==
+  Xvfb OK (1280x800)
+== [S0] wineboot 初始化 prefix（跳过 gecko/mono，最多 240s）==
+  wineboot OK
+== [W1] wine 启动 Windows 产物 ==
+== [W2] 等 CDP 就绪并校验是本品 Electron（最多 180s）==
+  CDP OK: Chrome/120.0.6099.227
+  W2 绿：UA 含 @security-survey/desktop（本品 Electron 在跑）
+  W1 绿：运行时栈为 Windows（wine 里 UA 报 Windows NT）
+== [W3/W4/S5] 经 CDP 检查页面目标与运行时（S5 仅参考）==
+  DOM 探针超时预算 = 15000ms
+  page 目标 2 个: index.html#/="首页 - 安防勘点设计工具" | dist/splash.html="安防勘点设计工具"
+  探针起点 T0 epoch=1789208288544ms
+  W3h(HTTP-only，未挂 WS，窗口 0→+3ms(epoch 1789208288547)) 观测到的主窗口标题 = ["首页 - 安防勘点设计工具"]
+W3h=1
+  挂 WS 后的标题轮询窗口: +14ms → +16ms（探针起点=T0）
+  期间观测到的标题序列: ["首页 - 安防勘点设计工具"]
+  W3: 观测到的标题 = ["首页 - 安防勘点设计工具"]；router 后缀标题 = 是（渲染层 JS 真执行过）；url 来自 app.asar = true
+W3=1
+  W3p(已 detach，HTTP-only，至 +18033ms(epoch 1789208306577)) 主窗口标题 = ["首页 - 安防勘点设计工具"]
+W3p=1
+  S5 不可判：DOM 探针未完成（探针 超时 15000ms）—— 与 W3 结论无关
+  （探针正常完成，W3=1）
+  三段观测（同一进程同一轮）：W3h(attach前)=1  W3(挂WS期间)=1  W3p(detach后)=1
+  ⇒ 渲染层跑到 router 且 detach 后仍在 ⇒ wine 本轮渲染层正常
+== [W4] 应用自建**业务**子目录（main.ts 业务代码在 Windows 上执行的证据）==
+  W4 绿：5 个业务子目录全部由应用创建（/root/.wine-sec/drive_c/users/root/AppData/Roaming/@security-survey/desktop）
+    存在: projects
+    存在: templates
+    存在: exports
+    存在: Cache（期望 cache，名字大小写不同 ⇒ 被 Chromium 抢先创建）
+    存在: logs
+== 汇总 ==
+----- [applog] wine/应用输出（每行前缀 epoch 毫秒）-----
+
+[404:0912/101806.363:ERROR:network_change_notifier_win.cc(267)] WSALookupServiceBegin failed with: 0
+ALSA lib confmisc.c:855:(parse_card) cannot find card '0'
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default
+ALSA lib confmisc.c:855:(parse_card) cannot find card '0'
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name
+ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default
+
+DevTools listening on ws://127.0.0.1:9222/devtools/browser/7c1fbe7f-0fcd-4f40-8bb3-233b62c5e9ea
+Python sidecar not found at: Z:\uw\resources\python\python.exe
+ODA File Converter not found at: Z:\uw\resources\oda\ODAFileConverter.exe
+[588:0912/101806.719:ERROR:network_change_notifier_win.cc(267)] WSALookupServiceBegin failed with: 0
+[708:0912/101808.583:ERROR:crashpad_client_win.cc(867)] not connected
+[Main] 渲染进程崩溃: { reason: [32m'crashed'[39m, exitCode: [33m-36861[39m }
+[Main] 渲染进程加载超时，强制显示窗口
+----- [/applog] -----
+  W1 绿 进程以 Windows 栈运行
+  W2 绿 Electron 主进程为本品
+  W3 参考（不计成败）：页面目标载入且 router 后缀标题已设
+  W4 绿 应用创建 5 个业务子目录
+  S5 不可判：探针未产出 DOM 数据（见上面 W3 不可判原因）
+wine 层验收 PASS（门禁 W1/W2/W4）。这不等于 Windows 实机通过 —— 渲染层、UI 与交互仍需真实 Windows。
+@@@CASE v5b rep=2 EXIT=0
+@@@SERIES end 2026-09-12T18:18:29+08:00

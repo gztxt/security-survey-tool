@@ -189,7 +189,8 @@ export function makeDrawing(overrides: Partial<Drawing> = {}): Drawing {
       point1: { x: 0, y: 0 },
       point2: { x: 10000, y: 0 },
       realDistance: 10,
-      scale: 1000,
+      // scale = 图上模型单位 / 实际毫米 = 10000 / 10000 = 1（模型按 1:1 毫米绘制）
+      scale: 1,
       unit: 'm',
     },
     layers: [

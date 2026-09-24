@@ -8,7 +8,7 @@
         :key="tab.id"
         class="tab-btn"
         :class="{ active: activeTab === tab.id }"
-        @click="activeTab = tab.id"
+        @click="selectTab(tab.id)"
         :title="tab.title"
       >
         <component :is="tab.icon" class="tab-icon" />
@@ -42,6 +42,7 @@ import PropertyPanel from '@/components/project/PropertyPanel.vue';
 import ProjectTreePanel from '@/components/project/ProjectTreePanel.vue';
 import WiringPanel from '@/components/wiring/WiringPanel.vue';
 import { useUiStore } from '@/stores/ui';
+import { useProjectStore } from '@/stores/project';
 import { useVisibility, type PanelId } from '@/composables/useVisibility';
 
 const props = defineProps<{
@@ -55,9 +56,13 @@ const emit = defineEmits<{
 }>();
 
 const uiStore = useUiStore();
+const projectStore = useProjectStore();
 const { showPanel } = useVisibility();
 
-const isCollapsed = ref(false);
+const isCollapsed = computed({
+  get: () => uiStore.sidebarCollapsed,
+  set: (v: boolean) => { uiStore.sidebarCollapsed = v; },
+});
 // 激活 Tab 以 uiStore 为单一事实源（「高级功能」菜单切面板与此互通）
 const activeTab = computed({
   get: () => uiStore.activeSidebarTab,
@@ -72,10 +77,69 @@ const tabs = [
   { id: 'properties', title: '属性', icon: 'PropertiesIcon' },
 ];
 
-// 精简态只露「设备库」；「高级功能」菜单切到某面板后，该面板临时可见（真实可达）
+/**
+ * 工作流步骤 → 面板。第一个是"主面板"（步骤推进时自动切过去），
+ * 整组用于排序；STEP_BASIC_PANELS 决定精简态额外露出哪些
+ * （否则精简态永远只有设备库，选中设备也打不开属性）。
+ */
+const STEP_PANELS: Record<string, string[]> = {
+  basemap: ['project', 'layers', 'devices'],
+  devices: ['devices', 'properties', 'layers'],
+  wiring: ['wiring', 'properties', 'devices'],
+  export: ['project', 'wiring', 'devices'],
+};
+const STEP_BASIC_PANELS: Record<string, string[]> = {
+  basemap: ['project'],
+  devices: ['devices', 'properties'],
+  wiring: ['wiring', 'properties'],
+  export: [],
+};
+
+const stepKey = computed(() => projectStore.workflowStep);
+const stepPanels = computed(() => STEP_PANELS[stepKey.value] ?? []);
+const stepBasicPanels = computed(() => STEP_BASIC_PANELS[stepKey.value] ?? []);
+
+/** 与当前步骤相关的面板排前，其余保持原序跟随其后 */
+const orderedTabs = computed(() => {
+  const priority = stepPanels.value;
+  return [...tabs].sort((a, b) => {
+    const ai = priority.indexOf(a.id);
+    const bi = priority.indexOf(b.id);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return 0;
+  });
+});
+
 const visibleTabs = computed(() =>
-  tabs.filter(t => showPanel(t.id as PanelId) || activeTab.value === t.id),
+  orderedTabs.value.filter(
+    t =>
+      showPanel(t.id as PanelId) ||
+      stepBasicPanels.value.includes(t.id) ||
+      activeTab.value === t.id,
+  ),
 );
+
+/**
+ * 步骤推进时跟随到该步骤的主面板；但用户手动点选过的面板优先，
+ * 不打断（否则正在看图层、刚放下一台设备就被抢走焦点）。
+ * 跟随一次后解除固定，下次步骤变化仍可跟随。
+ */
+const userPinned = ref(false);
+watch(stepKey, step => {
+  if (userPinned.value) {
+    userPinned.value = false;
+    return;
+  }
+  const primary = STEP_PANELS[step]?.[0];
+  if (primary && primary !== activeTab.value) activeTab.value = primary;
+});
+
+function selectTab(id: string) {
+  if (id !== activeTab.value) userPinned.value = true;
+  activeTab.value = id;
+}
 
 const panelComponents = {
   devices: DeviceLibraryPanel,
@@ -100,8 +164,8 @@ watch(activeTab, (val) => {
 });
 
 function toggleCollapse() {
-  isCollapsed.value = !isCollapsed.value;
-  emit('collapse', isCollapsed.value);
+  uiStore.toggleSidebar();
+  emit('collapse', uiStore.sidebarCollapsed);
 }
 
 // 图标组件

@@ -239,14 +239,22 @@ function setSearchQuery(query: string | Event) {
   searchQuery.value = typeof query === 'string' ? query : (query.target as HTMLInputElement).value;
 }
 
-// 分类图标与中文标签
+// 分类图标与中文标签（键 = 真实 DeviceCategory 值；旧键保留兼容自定义库）
 const categoryIconMap: Record<string, string> = {
-  all: '📦', camera: '📷', access_control: '🚪', alarm: '🚨', intercom: '📞',
-  patrol: '🚓', storage: '💾', network: '🌐', display: '🖥️', power: '🔌', sensor: '📡', other: '🔧',
+  all: '📦',
+  dome: '📷', bullet: '🎯', ptz: '🔄', panoramic: '🌐', thermal: '🌡️',
+  multi: '👁️', fisheye: '🔮', door_station: '🚪', nvr: '💾', switch: '🔀',
+  rack: '🗄️', other: '🔧',
+  camera: '📷', access_control: '🚪', alarm: '🚨', intercom: '📞',
+  patrol: '🚓', storage: '💾', network: '🌐', display: '🖥️', power: '🔌', sensor: '📡',
 };
 const categoryLabelMap: Record<string, string> = {
-  all: '全部', camera: '摄像机', access_control: '门禁', alarm: '报警', intercom: '对讲',
-  patrol: '巡更', storage: '存储', network: '网络', display: '显示', power: '电源', sensor: '传感', other: '其他',
+  all: '全部',
+  dome: '半球机', bullet: '枪机', ptz: '球机', panoramic: '全景', thermal: '热成像',
+  multi: '多目', fisheye: '鱼眼', door_station: '门口机', nvr: '录像机', switch: '交换机',
+  rack: '机柜', other: '其他',
+  camera: '摄像机', access_control: '门禁', alarm: '报警', intercom: '对讲',
+  patrol: '巡更', storage: '存储', network: '网络', display: '显示', power: '电源', sensor: '传感',
 };
 function getCategoryIcon(cat: string) {
   return categoryIconMap[cat] || '📦';

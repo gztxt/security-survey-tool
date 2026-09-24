@@ -8,7 +8,7 @@
         <label class="field-label">名称</label>
         <input
           class="field-input"
-          v-model="device.label"
+          v-model="form.label"
           @blur="updateDevice"
           placeholder="输入设备名称"
         />
@@ -16,7 +16,7 @@
 
       <div class="field-group">
         <label class="field-label">型号</label>
-        <select class="field-input" v-model="device.modelId" @change="updateDevice">
+        <select class="field-input" v-model="form.modelId" @change="updateDevice">
           <option v-for="model in compatibleModels" :key="model.id" :value="model.id">
             {{ model.name }} ({{ model.vendor }})
           </option>
@@ -31,22 +31,22 @@
             <input
               type="number"
               class="field-input"
-              :value="device.position.x.toFixed(0)"
+              :value="form.x"
               @change="updatePosition('x', $event)"
               step="1"
             />
-            <span class="coord-unit">mm</span>
+            <span class="coord-unit">模型单位</span>
           </div>
           <div class="coord-input">
             <span class="coord-label">Y</span>
             <input
               type="number"
               class="field-input"
-              :value="device.position.y.toFixed(0)"
+              :value="form.y"
               @change="updatePosition('y', $event)"
               step="1"
             />
-            <span class="coord-unit">mm</span>
+            <span class="coord-unit">模型单位</span>
           </div>
         </div>
       </div>
@@ -60,13 +60,13 @@
             :min="0"
             :max="360"
             :step="15"
-            v-model.number="device.rotation"
-            @input="updateDevice"
+            v-model.number="form.rotationDeg"
+            @change="updateDevice"
           />
           <input
             type="number"
             class="rotation-input"
-            v-model.number="device.rotation"
+            v-model.number="form.rotationDeg"
             @change="updateDevice"
             min="0"
             max="360"
@@ -80,24 +80,24 @@
         <label class="field-label">备注</label>
         <textarea
           class="field-input field-textarea"
-          v-model="device.remarks"
+          v-model="form.remarks"
           @blur="updateDevice"
           rows="3"
           placeholder="备注信息"
         ></textarea>
       </div>
 
-      <div class="field-group" v-if="device.customSpecs">
+      <div class="field-group" v-if="specEntries.length">
         <label class="field-label">自定义规格</label>
         <div class="specs-editor">
-          <div class="spec-row" v-for="(value, key) in device.customSpecs" :key="key">
-            <input class="field-input spec-key" :value="key" readonly />
+          <div class="spec-row" v-for="entry in specEntries" :key="entry.key">
+            <input class="field-input spec-key" :value="entry.key" readonly />
             <input
               class="field-input spec-value"
-              :value="value"
-              @change="updateCustomSpec(key, $event)"
+              :value="entry.value"
+              @change="updateCustomSpec(entry.key, $event)"
             />
-            <button class="icon-btn danger" @click="deleteCustomSpec(key)" title="删除">
+            <button class="icon-btn danger" @click="deleteCustomSpec(entry.key)" title="删除">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
                 <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -130,12 +130,14 @@
 
       <div class="field-group">
         <label class="field-label">类型</label>
-        <select class="field-input" v-model="cable.type" @change="updateCable">
+        <select class="field-input" v-model="cableForm.type" @change="updateCable">
+          <!-- option value 必须落在 CableType 联合内：旧写法 fiber-sm/coaxial
+               既不是合法枚举（下划线 vs 连字符），也没有对应的颜色/规格映射 -->
           <option value="cat6">CAT6 网线</option>
           <option value="cat6a">CAT6A 网线</option>
-          <option value="fiber-sm">单模光纤</option>
-          <option value="fiber-mm">多模光纤</option>
-          <option value="coaxial">同轴电缆</option>
+          <option value="cat7">CAT7 网线</option>
+          <option value="fiber_sm">单模光纤</option>
+          <option value="fiber_mm">多模光纤</option>
           <option value="power">电源线</option>
           <option value="custom">自定义</option>
         </select>
@@ -143,12 +145,12 @@
 
       <div class="field-group">
         <label class="field-label">颜色</label>
-        <input type="color" class="color-input" v-model="cable.color" @change="updateCable" />
+        <input type="color" class="color-input" v-model="cableForm.color" @change="updateCable" />
       </div>
 
       <div class="field-group">
         <label class="field-label">状态</label>
-        <select class="field-input" v-model="cable.status" @change="updateCable">
+        <select class="field-input" v-model="cableForm.status" @change="updateCable">
           <option value="auto">自动生成</option>
           <option value="manual">手动布线</option>
           <option value="modified">已修改</option>
@@ -158,19 +160,19 @@
       <div class="field-group">
         <label class="field-label">长度</label>
         <div class="length-display">
-          <span class="length-value">{{ cable.length.toFixed(1) }} mm</span>
-          <span v-if="cable.correctedLength" class="length-corrected">(修正: {{ cable.correctedLength.toFixed(1) }} mm)</span>
+          <span class="length-value">{{ cable.length.toFixed(1) }} m</span>
+          <span v-if="cable.correctedLength" class="length-corrected">(含盘留: {{ cable.correctedLength.toFixed(1) }} m)</span>
         </div>
       </div>
 
       <div class="field-group">
         <label class="field-label">标签</label>
-        <input class="field-input" v-model="cable.label" @blur="updateCable" placeholder="可选标签" />
+        <input class="field-input" v-model="cableForm.label" @blur="updateCable" placeholder="可选标签" />
       </div>
 
       <div class="field-group">
         <label class="field-label">路径点数</label>
-        <span class="path-point-count">{{ cable.path.length }} 个节点</span>
+        <span class="path-point-count">{{ cable.path.length }} 个拐点</span>
       </div>
 
       <div class="field-group">
@@ -198,7 +200,8 @@
 import { ref, computed, watch } from 'vue';
 import { useProjectStore } from '@/stores/project';
 import { useDeviceLibraryStore } from '@/stores/deviceLibrary';
-import type { DeviceInstance, Cable } from '@security-survey/shared-types';
+import { useUiStore } from '@/stores/ui';
+import type { DeviceInstance, Cable, CableType } from '@security-survey/shared-types';
 
 const props = defineProps<{
   deviceId?: string | null;
@@ -212,16 +215,70 @@ const emit = defineEmits<{
 
 const projectStore = useProjectStore();
 const deviceLibraryStore = useDeviceLibraryStore();
+const uiStore = useUiStore();
+
+/** 无显式 props（侧栏直呼面板）时回落到全局选择 */
+const activeDeviceId = computed(() => props.deviceId ?? uiStore.selectedDeviceId);
+const activeCableId = computed(() => props.cableId ?? uiStore.selectedCableId);
 
 const device = computed(() => {
-  if (!props.deviceId) return null;
-  return projectStore.projectDevices.find(d => d.id === props.deviceId) || null;
+  if (!activeDeviceId.value) return null;
+  return projectStore.projectDevices.find(d => d.id === activeDeviceId.value) || null;
 });
 
 const cable = computed(() => {
-  if (!props.cableId) return null;
-  return projectStore.projectCables.find(c => c.id === props.cableId) || null;
+  if (!activeCableId.value) return null;
+  return projectStore.projectCables.find(c => c.id === activeCableId.value) || null;
 });
+
+/**
+ * 表单草稿：此前 v-model 直接绑到 store 里的设备对象，
+ * 一次拖动滑块 = N 次对象改写，undo 快照又被 restore 覆盖 ⇒ 撤销粒度失控。
+ * 草稿只在"提交"（change/blur）时写回 store 一次。
+ */
+const form = ref({
+  label: '',
+  modelId: '',
+  x: 0,
+  y: 0,
+  rotationDeg: 0,
+  remarks: '',
+  customSpecs: {} as Record<string, unknown>,
+});
+
+const cableForm = ref<{ type: CableType; color: string; status: Cable['status']; label: string }>({
+  type: 'cat6',
+  color: '#3b82f6',
+  status: 'manual',
+  label: '',
+});
+
+function syncFormFromDevice() {
+  const d = device.value;
+  if (!d) return;
+  form.value = {
+    label: d.label ?? '',
+    modelId: d.modelId ?? '',
+    x: Math.round(d.position.x),
+    y: Math.round(d.position.y),
+    rotationDeg: Math.round((d.rotation ?? 0) * 180 / Math.PI),
+    remarks: d.remarks ?? '',
+    customSpecs: { ...(d.customSpecs as Record<string, unknown> | undefined ?? {}) },
+  };
+}
+
+function syncFormFromCable() {
+  const c = cable.value;
+  if (!c) return;
+  cableForm.value = { type: c.type, color: c.color, status: c.status, label: c.label ?? '' };
+}
+
+watch(device, syncFormFromDevice, { immediate: true });
+watch(cable, syncFormFromCable, { immediate: true });
+
+const specEntries = computed(() =>
+  Object.entries(form.value.customSpecs ?? {}).map(([key, value]) => ({ key, value }))
+);
 
 const compatibleModels = computed(() => {
   if (!device.value) return [];
@@ -232,59 +289,76 @@ const compatibleModels = computed(() => {
   );
 });
 
+/** 把草稿变更提交到 store（一次 change = 一步历史） */
+function commitDevice() {
+  if (!device.value) return;
+  const updates: Partial<DeviceInstance> = {
+    label: form.value.label,
+    modelId: form.value.modelId,
+    remarks: form.value.remarks,
+    position: { ...device.value.position, x: form.value.x, y: form.value.y },
+    rotation: form.value.rotationDeg * Math.PI / 180,
+    customSpecs: form.value.customSpecs as Partial<DeviceInstance['customSpecs']> & Record<string, unknown>,
+  };
+  projectStore.updateDevice(device.value.id, updates);
+  emit('update', updates);
+}
+
 function updateDevice() {
-  if (device.value) {
-    emit('update', { ...device.value });
-  }
+  commitDevice();
 }
 
 function updatePosition(axis: 'x' | 'y', event: Event) {
-  if (!device.value) return;
   const value = parseFloat((event.target as HTMLInputElement).value);
   if (!isNaN(value)) {
-    device.value.position[axis] = value;
+    form.value[axis] = value;
     updateDevice();
   }
 }
 
 function updateCustomSpec(key: string | number, event: Event) {
-  if (!device.value?.customSpecs) return;
   const value = (event.target as HTMLInputElement).value;
-  device.value.customSpecs[String(key)] = value;
+  form.value.customSpecs[String(key)] = value;
   updateDevice();
 }
 
 function addCustomSpec() {
-  if (!device.value) return;
-  if (!device.value.customSpecs) device.value.customSpecs = {};
-  const newKey = `spec${Object.keys(device.value.customSpecs).length + 1}`;
-  device.value.customSpecs[newKey] = '';
+  const newKey = `spec${Object.keys(form.value.customSpecs).length + 1}`;
+  form.value.customSpecs[newKey] = '';
   updateDevice();
 }
 
 function deleteCustomSpec(key: string | number) {
-  if (!device.value?.customSpecs) return;
-  delete device.value.customSpecs[String(key)];
+  delete form.value.customSpecs[String(key)];
   updateDevice();
 }
 
 function duplicateDevice() {
-  if (!device.value) return;
-  // 触发复制逻辑（在父组件处理）
-  // 这里只关闭面板
-  emit('close');
+  const d = device.value;
+  if (!d) return;
+  const copy: DeviceInstance = {
+    ...JSON.parse(JSON.stringify(d)),
+    id: `dev-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    position: { x: d.position.x + 500, y: d.position.y + 500 },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  projectStore.addDevice(copy);
+  uiStore.setSelection(copy.id, null);
 }
 
 function deleteDevice() {
-  if (!device.value) return;
-  // 触发删除逻辑
+  const d = device.value;
+  if (!d) return;
+  projectStore.removeDevice(d.id);
+  uiStore.setSelection(null, null);
   emit('close');
 }
 
 function updateCable() {
-  if (cable.value) {
-    emit('update', { ...cable.value });
-  }
+  if (!cable.value) return;
+  projectStore.updateCable(cable.value.id, { ...cableForm.value });
+  emit('update', { ...cableForm.value });
 }
 
 function editCablePath() {
@@ -293,8 +367,10 @@ function editCablePath() {
 }
 
 function deleteCable() {
-  if (!cable.value) return;
-  // 触发删除
+  const c = cable.value;
+  if (!c) return;
+  projectStore.removeCable(c.id);
+  uiStore.setSelection(null, null);
   emit('close');
 }
 </script>

@@ -221,6 +221,27 @@
 
       <!-- 右侧：预览与历史 -->
       <div class="export-preview">
+        <!-- 导出前完整性检查：逐图纸显示 底图/布点/布线 完成度（工作流第 4 步的验收单） -->
+        <el-card class="readiness-card" shadow="never">
+          <template #header>
+            <div class="card-header">
+              <h3>图纸完整性</h3>
+              <span class="readiness-summary" :class="{ 'is-ok': readinessOk }">
+                {{ readinessOk ? '全部就绪' : `${readinessIssues.length} 项待完善` }}
+              </span>
+            </div>
+          </template>
+          <div class="readiness-rows">
+            <div v-for="row in readinessRows" :key="row.id" class="readiness-row">
+              <span class="drawing-name" :title="row.name">{{ row.name }}</span>
+              <span class="check" :class="{ ok: row.hasBasemap }" title="底图">{{ row.hasBasemap ? '✓' : '✗' }} 底图</span>
+              <span class="check" :class="{ ok: row.hasDevices }" title="点位">{{ row.hasDevices ? '✓' : '✗' }} 点位</span>
+              <span class="check" :class="{ ok: row.hasCables }" title="线路">{{ row.hasCables ? '✓' : '✗' }} 线路</span>
+            </div>
+            <div v-if="!readinessRows.length" class="readiness-empty">当前项目暂无图纸，请先在图纸页导入底图</div>
+          </div>
+        </el-card>
+
         <!-- 预览区 -->
         <el-card class="preview-card" shadow="never">
           <template #header>
@@ -388,6 +409,38 @@ const previewLoading = ref(false);
 const previewError = ref<string | null>(null);
 const previewData = ref<any>(null);
 const activeOptions = ref<string[]>(['pointmap']);
+
+// ============ 导出前完整性检查（工作流第 4 步验收单）============
+interface ReadinessRow {
+  id: string;
+  name: string;
+  hasBasemap: boolean;
+  hasDevices: boolean;
+  hasCables: boolean;
+}
+
+const readinessRows = computed<ReadinessRow[]>(() =>
+  (projectStore.drawings || []).map((d: any) => ({
+    id: d.id,
+    name: d.name || '未命名图纸',
+    hasBasemap: !!d.file || (d.entities?.length || 0) > 0,
+    hasDevices: (d.devices?.length || 0) > 0,
+    hasCables: (d.wiring?.cables?.length || 0) > 0,
+  }))
+);
+
+/** 缺项列表：任一图纸缺底图/点位/线路即视为待完善 */
+const readinessIssues = computed(() => {
+  const issues: string[] = [];
+  for (const row of readinessRows.value) {
+    if (!row.hasBasemap) issues.push(`${row.name}：缺底图`);
+    if (!row.hasDevices) issues.push(`${row.name}：未布点`);
+    if (!row.hasCables) issues.push(`${row.name}：未画线路`);
+  }
+  return issues;
+});
+
+const readinessOk = computed(() => readinessRows.value.length > 0 && readinessIssues.value.length === 0);
 
 // 导出类型定义
 // ★ AC-7.2：DXF 的文案严格写「导出 DXF」，禁写"导出 CAD"（与 AC-2.4 诚实声明红线同源）
@@ -937,6 +990,64 @@ watch(exportConfig, (val) => {
   padding: 16px;
   border-top: 1px solid var(--border-color);
   margin-top: auto;
+}
+
+.readiness-card {
+  margin-bottom: 16px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.readiness-card :deep(.el-card__body) {
+  padding: 12px 16px;
+}
+
+.readiness-summary {
+  font-size: 12px;
+  color: var(--warning-color, #f59e0b);
+}
+
+.readiness-summary.is-ok {
+  color: var(--success-color, #10b981);
+}
+
+.readiness-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 128px;
+  overflow-y: auto;
+}
+
+.readiness-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.readiness-row .drawing-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.readiness-row .check {
+  flex-shrink: 0;
+  color: var(--danger-color, #ef4444);
+}
+
+.readiness-row .check.ok {
+  color: var(--success-color, #10b981);
+}
+
+.readiness-empty {
+  font-size: 12.5px;
+  color: var(--text-tertiary);
 }
 
 .preview-card,

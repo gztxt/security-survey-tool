@@ -130,7 +130,7 @@
                 <span class="step-num">5</span>
                 <div class="step-info">
                   <h4>自动布线</h4>
-                  <p>按 <kbd>Ctrl+Shift+W</kbd> 一键生成拓扑布线</p>
+                  <p>在侧栏「布线」面板点「全自动布线」，一键生成拓扑布线（需先有设备与弱电井）</p>
                 </div>
               </div>
               <div class="step">
@@ -157,6 +157,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, nextTick } from 'vue';
 import { ElMessage } from 'element-plus';
+import { KEYMAP, CATEGORY_LABELS, describeKey, type KeyBinding } from '@/keymap';
 import {
   Document, FolderOpened, Picture, Setting, Upload, Download, Refresh,
   Search, ArrowDown, Link, Platform, ChatDotRound,
@@ -309,6 +310,43 @@ function sanitizeHtml(dirty: string): string {
   return doc.body.innerHTML;
 }
 
+
+/**
+ * 快捷键章节由 keymap（唯一真相源）生成 —— 帮助页不再手抄表格。
+ * 此前手抄表里一半的键没有任何处理器（Ctrl+R 标尺、Ctrl+B 批量部署、
+ * 全部 Ctrl+Shift+字母 快速导出、F11 全屏……），宣称与实现漂移。
+ */
+const SHORTCUT_GROUPS: Array<{ tocId: string; title: string; categories: KeyBinding['category'][] }> = [
+  { tocId: 'global', title: '全局通用', categories: ['file', 'window', 'help'] },
+  { tocId: 'canvas', title: '画布操作', categories: ['view'] },
+  { tocId: 'drawing', title: '图纸管理', categories: ['drawing'] },
+  { tocId: 'device', title: '设备与布线', categories: ['device', 'wiring'] },
+  { tocId: 'edit', title: '编辑操作', categories: ['edit'] },
+];
+
+function shortcutToc() {
+  return SHORTCUT_GROUPS.map(g => ({ id: g.tocId, text: g.title }));
+}
+
+function rowsFor(categories: KeyBinding['category'][]): string {
+  return KEYMAP.filter(b => categories.includes(b.category))
+    .map(b => `<tr><td><kbd>${b.keys.map(describeKey).join('</kbd> / <kbd>')}</kbd></td><td>${b.action}</td><td>${b.description}</td></tr>`)
+    .join('\n          ');
+}
+
+function shortcutTablesHtml(): string {
+  return SHORTCUT_GROUPS.map(g => `
+        <h2 id="${g.tocId}">${g.title}</h2>
+        <table>
+          <thead><tr><th>快捷键</th><th>功能</th><th>说明</th></tr></thead>
+          <tbody>
+          ${rowsFor(g.categories)}
+          </tbody>
+        </table>`).join('\n') + `
+        <p><em>本表由代码内的按键注册表自动生成：只列出真实接线可用的快捷键。若发现表中按键无响应，属于缺陷，请反馈。</em></p>
+      `;
+}
+
 async function loadContent(id: string) {
   // TODO: 从本地文件或远程加载 Markdown 内容
   // 这里使用模拟数据
@@ -340,7 +378,7 @@ async function loadContent(id: string) {
 
         <h2 id="ui">界面布局</h2>
         <ul>
-          <li><strong>顶部工具栏</strong> - 文件、编辑、视图、图纸、设备、布线、导出、帮助菜单</li>
+          <li><strong>顶部栏</strong> - 返回首页、项目名与面包屑、保存/另存为、导入图纸、导出方案、侧边栏折叠、设置（图标按钮，非下拉菜单）</li>
           <li><strong>左侧面板</strong> - 设备库、项目树、图层管理、弱电井/桥架</li>
           <li><strong>中间画布</strong> - 图纸显示、设备放置、布线绘制、多标签页</li>
           <li><strong>右侧面板</strong> - 属性面板、布线详情、视场参数、搜索</li>
@@ -366,7 +404,7 @@ async function loadContent(id: string) {
       toc: [],
       html: `
         <h2>创建新项目</h2>
-        <p>启动应用后，点击欢迎页的「新建项目」或按 <kbd>Ctrl+N</kbd>，或在菜单栏选择「文件 → 新建项目」。</p>
+        <p>启动应用后，点击欢迎页的「新建项目」，或按 <kbd>Ctrl+N</kbd>。</p>
 
         <h3>项目信息</h3>
         <ul>
@@ -415,7 +453,7 @@ async function loadContent(id: string) {
         <h2 id="methods">导入方式</h2>
         <ul>
           <li><strong>拖拽导入</strong>：将文件直接拖入画布区域或标签栏「+」旁</li>
-          <li><strong>菜单导入</strong>：图纸 → 导入图纸 ( <kbd>Ctrl+I</kbd> )</li>
+          <li><strong>按钮导入</strong>：顶部栏「导入图纸」图标，或按 <kbd>Ctrl+I</kbd></li>
           <li><strong>项目树导入</strong>：右键项目 → 导入图纸</li>
         </ul>
 
@@ -441,112 +479,10 @@ async function loadContent(id: string) {
     },
     'shortcuts': {
       title: '快捷键大全',
-      updated: '2026-07-20',
-      readTime: '10 分钟',
-      toc: [
-        { id: 'global', text: '全局通用' },
-        { id: 'canvas', text: '画布操作' },
-        { id: 'drawing', text: '图纸管理' },
-        { id: 'device', text: '设备操作' },
-        { id: 'wiring', text: '布线操作' },
-        { id: 'export', text: '导出输出' },
-      ],
-      html: `
-        <h2 id="global">全局通用</h2>
-        <table>
-          <thead><tr><th>快捷键</th><th>功能</th><th>备注</th></tr></thead>
-          <tbody>
-            <tr><td><kbd>Ctrl+N</kbd></td><td>新建项目</td><td></td></tr>
-            <tr><td><kbd>Ctrl+O</kbd></td><td>打开项目</td><td></td></tr>
-            <tr><td><kbd>Ctrl+S</kbd></td><td>保存项目</td><td></td></tr>
-            <tr><td><kbd>Ctrl+Shift+S</kbd></td><td>另存为</td><td></td></tr>
-            <tr><td><kbd>Ctrl+I</kbd></td><td>导入图纸</td><td></td></tr>
-            <tr><td><kbd>Ctrl+E</kbd></td><td>导出对话框</td><td></td></tr>
-            <tr><td><kbd>Ctrl+Z</kbd></td><td>撤销</td><td></td></tr>
-            <tr><td><kbd>Ctrl+Y</kbd> / <kbd>Ctrl+Shift+Z</kbd></td><td>重做</td><td></td></tr>
-            <tr><td><kbd>Ctrl+A</kbd></td><td>全选</td><td>当前图纸所有对象</td></tr>
-            <tr><td><kbd>Delete</kbd></td><td>删除选中</td><td></td></tr>
-            <tr><td><kbd>Escape</kbd></td><td>取消/退出模式</td><td>退出放置、布线、选择模式</td></tr>
-            <tr><td><kbd>F1</kbd></td><td>帮助文档</td><td></td></tr>
-            <tr><td><kbd>F11</kbd></td><td>全屏切换</td><td></td></tr>
-            <tr><td><kbd>Ctrl+,</kbd></td><td>打开设置</td><td></td></tr>
-          </tbody>
-        </table>
-
-        <h2 id="canvas">画布操作</h2>
-        <table>
-          <thead><tr><th>快捷键</th><th>功能</th><th>备注</th></tr></thead>
-          <tbody>
-            <tr><td><kbd>滚轮</kbd></td><td>以鼠标为中心缩放</td><td></td></tr>
-            <tr><td><kbd>Shift+滚轮</kbd></td><td>水平平移</td><td></td></tr>
-            <tr><td><kbd>中键拖拽</kbd></td><td>平移画布</td><td>设置中可改为右键</td></tr>
-            <tr><td><kbd>空格+左键拖拽</kbd></td><td>平移画布</td><td>临时手抓工具</td></tr>
-            <tr><td><kbd>1</kbd></td><td>100% 实际大小</td><td></td></tr>
-            <tr><td><kbd>Shift+1</kbd></td><td>缩放适应窗口</td><td></td></tr>
-            <tr><td><kbd>Shift+2</kbd></td><td>缩放选中对象</td><td></td></tr>
-            <tr><td><kbd>G</kbd></td><td>切换网格显示</td><td></td></tr>
-            <tr><td><kbd>S</kbd></td><td>切换吸附开启</td><td></td></tr>
-            <tr><td><kbd>R</kbd></td><td>重置视图</td><td>回到初始位置缩放</td></tr>
-            <tr><td><kbd>Ctrl+R</kbd></td><td>切换标尺</td><td></td></tr>
-          </tbody>
-        </table>
-
-        <h2 id="drawing">图纸管理</h2>
-        <table>
-          <thead><tr><th>快捷键</th><th>功能</th></tr></thead>
-          <tbody>
-            <tr><td><kbd>Ctrl+T</kbd></td><td>新建图纸标签页</td></tr>
-            <tr><td><kbd>Ctrl+W</kbd></td><td>关闭当前图纸</td></tr>
-            <tr><td><kbd>Ctrl+Tab</kbd></td><td>下一个图纸</td></tr>
-            <tr><td><kbd>Ctrl+Shift+Tab</kbd></td><td>上一个图纸</td></tr>
-            <tr><td><kbd>Ctrl+1~9</kbd></td><td>切换到第 1-9 个图纸</td></tr>
-            <tr><td><kbd>Ctrl+K</kbd></td><td>图纸校准向导</td></tr>
-            <tr><td><kbd>Ctrl+Shift+P</kbd></td><td>图纸属性</td></tr>
-          </tbody>
-        </table>
-
-        <h2 id="device">设备操作</h2>
-        <table>
-          <thead><tr><th>快捷键</th><th>功能</th></tr></thead>
-          <tbody>
-            <tr><td><kbd>D</kbd></td><td>进入设备放置模式</td></tr>
-            <tr><td><kbd>Ctrl+L</kbd></td><td>切换设备库面板</td></tr>
-            <tr><td><kbd>Ctrl+B</kbd></td><td>批量部署对话框</td></tr>
-            <tr><td><kbd>V</kbd></td><td>切换视场分析模式</td></tr>
-            <tr><td><kbd>双击设备</kbd></td><td>编辑设备属性</td></tr>
-            <tr><td><kbd>设备上按 Delete</kbd></td><td>删除设备</td></tr>
-          </tbody>
-        </table>
-
-        <h2 id="wiring">布线操作</h2>
-        <table>
-          <thead><tr><th>快捷键</th><th>功能</th></tr></thead>
-          <tbody>
-            <tr><td><kbd>W</kbd></td><td>进入手动布线模式</td></tr>
-            <tr><td><kbd>Ctrl+W</kbd></td><td>切换布线模式</td></tr>
-            <tr><td><kbd>Ctrl+Shift+W</kbd></td><td>执行自动布线</td></tr>
-            <tr><td><kbd>Shift+W</kbd></td><td>添加弱电井</td></tr>
-            <tr><td><kbd>Shift+T</kbd></td><td>绘制桥架</td></tr>
-            <tr><td><kbd>布线中点击</kbd></td><td>添加转折点</td></tr>
-            <tr><td><kbd>布线中右键</kbd></td><td>结束当前布线</td></tr>
-            <tr><td><kbd>布线中按 Escape</kbd></td><td>取消布线</td></tr>
-          </tbody>
-        </table>
-
-        <h2 id="export">导出输出</h2>
-        <table>
-          <thead><tr><th>快捷键</th><th>功能</th></tr></thead>
-          <tbody>
-            <tr><td><kbd>Ctrl+Shift+P</kbd></td><td>快速导出点位图</td></tr>
-            <tr><td><kbd>Ctrl+Shift+T</kbd></td><td>快速导出拓扑图</td></tr>
-            <tr><td><kbd>Ctrl+Shift+F</kbd></td><td>快速导出视场图</td></tr>
-            <tr><td><kbd>Ctrl+Shift+B</kbd></td><td>快速导出 BOM</td></tr>
-            <tr><td><kbd>Ctrl+Shift+R</kbd></td><td>快速导出报告</td></tr>
-          </tbody>
-        </table>
-
-        <p><em>所有快捷键可在「设置 → 快捷键」中自定义，支持导入/导出配置方案。</em></p>
-      `,
+      updated: '2026-09-12',
+      readTime: '5 分钟',
+      toc: shortcutToc(),
+      html: shortcutTablesHtml(),
     },
     'troubleshooting': {
       title: '常见问题',

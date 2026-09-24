@@ -107,16 +107,11 @@
         <el-divider>高级选项</el-divider>
 
         <el-form-item label="自动保存">
-          <el-switch v-model="form.autoSave" active-value="true" inactive-value="false" />
+          <el-switch v-model="form.autoSave" :active-value="true" :inactive-value="false" />
         </el-form-item>
 
         <el-form-item label="创建后打开">
-          <el-switch v-model="form.openAfterCreate" active-value="true" inactive-value="false" />
-        </el-form-item>
-
-        <el-form-item label="添加示例数据">
-          <el-switch v-model="form.addSampleData" active-value="true" inactive-value="false" />
-          <span class="switch-hint">预置几个设备和布线示例，便于快速上手</span>
+          <el-switch v-model="form.openAfterCreate" :active-value="true" :inactive-value="false" />
         </el-form-item>
       </el-form>
 
@@ -163,8 +158,10 @@ import { ref, reactive, computed, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { FolderOpened } from '@element-plus/icons-vue';
+import { useProjectStore } from '@/stores/project';
 
 const router = useRouter();
+const projectStore = useProjectStore();
 
 const formRef = ref<any>();
 const submitting = ref(false);
@@ -192,7 +189,6 @@ const form = reactive({
   defaultOrientation: 'landscape',
   autoSave: true,
   openAfterCreate: true,
-  addSampleData: false,
 });
 
 const rules = {
@@ -274,27 +270,73 @@ async function submitForm() {
   submitting.value = true;
 
   try {
-    // const projectId = await window.electronAPI.createProject({
-    //   ...form,
-    //   defaultScale: form.defaultScale === 'custom' ? form.customScale : parseFloat(form.defaultScale),
-    // });
+    // 真实创建：以前是 setTimeout 模拟 + 跳到不存在数据的页面，工作流第 0 步是断头路
+    const now = Date.now();
+    const projectId = 'proj-' + now;
+    const scale = typeof form.defaultScale === 'string' && form.defaultScale !== 'custom'
+      ? parseFloat(form.defaultScale)
+      : Number(form.customScale) || 0.01;
 
-    // 模拟创建成功
-    await new Promise(r => setTimeout(r, 800));
-    const projectId = 'proj-' + Date.now();
+    const project: any = {
+      id: projectId,
+      name: form.name.trim(),
+      createdAt: now,
+      updatedAt: now,
+      drawings: blankDrawings(projectId),
+      settings: {
+        defaultScale: scale,
+        unit: (form.defaultUnit || 'mm') as 'mm' | 'cm' | 'm',
+        gridSize: 1000,
+        snapEnabled: true,
+        autoSaveInterval: form.autoSave ? 30000 : 0,
+      },
+      meta: {
+        code: form.code,
+        designer: form.designer,
+        location: form.location,
+        type: form.type,
+        description: form.description,
+        template: form.template,
+        paper: form.defaultPaper,
+        orientation: form.defaultOrientation,
+      },
+    };
 
-    ElMessage.success('项目创建成功');
+    projectStore.setProject(project);
+    ElMessage.success(`项目「${project.name}」已创建，请导入底图开始勘察`);
 
     if (form.openAfterCreate) {
-      router.push({ name: 'Drawing', params: { projectId } });
+      // 进入项目工作区（默认子路由 = 图纸页），步骤条引导"第 1 步 导入底图"
+      router.push({ name: 'project', params: { id: project.id } });
     } else {
-      router.push({ name: 'Dashboard' });
+      router.push({ name: 'home' });
     }
   } catch (error: any) {
     ElMessage.error(error.message || '创建失败');
   } finally {
     submitting.value = false;
   }
+}
+
+/** 按模板生成空白图纸（blank=1 张；其余模板 3 张：1F/2F/周边） */
+function blankDrawings(projectId: string): any[] {
+  const names = form.template === 'blank' ? ['1F平面图'] : ['1F平面图', '2F平面图', '总平周边'];
+  return names.map((name, i) => ({
+    id: `drawing-${Date.now()}-${i}`,
+    projectId,
+    name,
+    floor: name.match(/^\d+/)?.[0] || '',
+    order: i,
+    file: null as any,
+    calibration: { isCalibrated: false, point1: { x: 0, y: 0 }, point2: { x: 0, y: 0 }, realDistance: 0, scale: 1, unit: 'm' },
+    layers: [],
+    entities: [],
+    viewport: { transform: { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }, center: { x: 0, y: 0 }, zoom: 1, showGrid: true, showRuler: true },
+    devices: [],
+    wiring: { id: '', drawingId: '', weakPoints: [], trays: [], cables: [], topology: [] },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }));
 }
 </script>
 

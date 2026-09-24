@@ -588,6 +588,46 @@ export const BUILTIN_DEVICES: DeviceModel[] = [
     updatedAt: Date.now(),
   },
 
+  // === 机柜 ===
+  {
+    id: 'generic-rack-42u',
+    name: '标准机柜 42U（弱电机房）',
+    vendor: 'Generic',
+    category: 'rack',
+    type: 'custom',
+    specs: {
+      powerConsumption: 0,
+      voltage: 'AC220V',
+      dimensions: { w: 600, h: 2000, d: 800 },
+      weight: 120000,
+    },
+    icon: { type: 'builtin', path: 'rack-42u', width: 28, height: 28, anchor: { x: 0.5, y: 0.5 }, rotationOffset: 0 },
+    price: 2500,
+    description: '600×800×2000 标准 19 英寸机柜，放弱电机房/弱电井',
+    tags: ['rack', 'cabinet', '42u', '机柜'],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  },
+  {
+    id: 'generic-rack-wall-12u',
+    name: '壁挂网络机柜 12U',
+    vendor: 'Generic',
+    category: 'rack',
+    type: 'custom',
+    specs: {
+      powerConsumption: 0,
+      voltage: 'AC220V',
+      dimensions: { w: 600, h: 600, d: 450 },
+      weight: 25000,
+    },
+    icon: { type: 'builtin', path: 'rack-wall', width: 24, height: 24, anchor: { x: 0.5, y: 0.5 }, rotationOffset: 0 },
+    price: 600,
+    description: '楼层弱电间壁挂机柜，装交换机/POE 供电/配线架',
+    tags: ['rack', 'wall', '12u', '机柜'],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  },
+
   // === 通用/其他 ===
   {
     id: 'generic-dome-2mp',

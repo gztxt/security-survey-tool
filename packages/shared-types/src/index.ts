@@ -45,6 +45,27 @@ export interface Project {
   updatedAt: number;
   drawings: Drawing[];
   settings: ProjectSettings;
+  /**
+   * 项目台账信息（新建项目表单收集）。刻意可选：早期 .survey 文件没有该字段，
+   * 读取方必须容错，否则旧项目一打开就崩。
+   */
+  meta?: ProjectMeta;
+}
+
+export interface ProjectMeta {
+  /** 项目编号，如 PRJ-2026-001 */
+  code?: string;
+  /** 设计单位 */
+  designer?: string;
+  /** 项目地点 */
+  location?: string;
+  /** 项目类型（integrated-security / video-surveillance / perimeter-alarm / access-control / custom） */
+  type?: string;
+  description?: string;
+  /** 创建时所选模板（blank / 园区 / 楼栋 …） */
+  template?: string;
+  paper?: string;
+  orientation?: string;
 }
 
 export interface ProjectSettings {
@@ -89,8 +110,34 @@ export interface CalibrationData {
   point1: Point2D;           // 图纸上点1
   point2: Point2D;           // 图纸上点2
   realDistance: number;      // 实测距离(米)
-  scale: number;             // 计算出的比例尺 (模型单位/米)
+  /**
+   * 比例尺 = 图上模型单位 / 实际毫米，**无量纲**。
+   * 由 useCalibration.deriveCalibration() 产出；未校准默认 1，
+   * 此时模型单位即按毫米解释（CAD 通常按 1:1 全尺寸绘制）。
+   * 显示成工程比例尺用 1/scale，即 "1:N"。
+   */
+  scale: number;
   unit: 'mm' | 'cm' | 'm';
+}
+
+// ============ 比例尺单位换算（单一真相） ============
+//
+// 历史缺陷：scale 在不同模块被同时当作「模型单位/米」和「无量纲比值」使用，
+// 导致线缆长度被放大 scale² 倍（材料表与报价随之全错）。所有换算必须走下面两个函数，
+// 不得再手写 `* scale` 或 `/ scale`。
+
+export const MM_PER_M = 1000;
+
+/** 模型坐标距离 → 实际米数 */
+export function modelUnitsToMeters(modelUnits: number, scale: number | undefined): number {
+  const s = scale && scale > 0 ? scale : 1;
+  return modelUnits / s / MM_PER_M;
+}
+
+/** 实际米数 → 模型坐标距离（画比例尺、按实测反推图面长度时用） */
+export function metersToModelUnits(meters: number, scale: number | undefined): number {
+  const s = scale && scale > 0 ? scale : 1;
+  return meters * MM_PER_M * s;
 }
 
 export interface CadLayer {
@@ -111,8 +158,11 @@ export interface ViewportState {
   zoom: number;               // 缩放级别
   showGrid: boolean;
   showRuler: boolean;
-  worldX?: number;            // 光标世界坐标(由画布组件回填)
-  worldY?: number;
+  // 曾有可选字段 worldX/worldY（注释称"由画布组件回填"），但全仓无任何写入点、
+  // 也无人读取，光标坐标真值在 CanvasViewport 内部的 hoverPosition。
+  // 留着它曾诱发一次严重缺陷：DrawingView 状态栏直接 viewport.worldX.toFixed(1)，
+  // 渲染期抛 TypeError ⇒ 整个图纸视图不挂载、工作区空白（真实 AppImage 冒烟 R9）。
+  // 类型里不要放"打算以后写"的空字段：编译器会当它是真数据源。
 }
 
 // ============ CAD 图元模型 ============
@@ -268,6 +318,7 @@ export type DeviceCategory =
   | 'door_station' // 门口机
   | 'nvr'        // 录像机
   | 'switch'     // 交换机
+  | 'rack'       // 机柜
   | 'other';
 
 export type DeviceType =
@@ -394,8 +445,8 @@ export interface Cable {
   id: string;
   type: CableType;
   path: Point2D[];             // 走线路径(正交或直线)
-  length: number;              // 计算长度(米)
-  correctedLength: number;     // 含盘留长度
+  length: number;              // 计算长度(米)：必须经 modelUnitsToMeters() 换算
+  correctedLength: number;     // 含盘留长度(米)，与 length 同单位
   startDeviceId: string;       // 起点设备/井
   endDeviceId: string;         // 终点设备/井/交换机
   trayIds: string[];           // 经过的桥架段
@@ -542,6 +593,7 @@ export const DEVICE_CATEGORY_LABELS: Record<DeviceCategory, string> = {
   door_station: '门口机',
   nvr: '录像机',
   switch: '交换机',
+  rack: '机柜',
   other: '其他',
 };
 

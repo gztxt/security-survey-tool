@@ -23,7 +23,8 @@ function makeCalibration(): CalibrationData {
     point1: { x: 0, y: 0 },
     point2: { x: 100, y: 0 },
     realDistance: 10,
-    scale: 10,
+    // scale = 图上 100 单位 / 实际 10000mm = 0.01（即 1:100 图纸）
+    scale: 0.01,
     unit: 'm',
   };
 }
@@ -247,5 +248,36 @@ describe('project store · saveProject 契约', () => {
     expect(entity.data.imagePath).toBe('');                 // dataURL 必须被剥离
     expect(entity.data.sourcePath).toBe('C:/tmp/plan.png'); // 来源引用必须保留
     expect(JSON.stringify(payload)).not.toContain('data:image/png;base64');
+  });
+});
+
+describe('project store · manualWire 线长换算', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    localStorage.clear();
+  });
+
+  it('1:100 图纸（scale=0.01）上 3000 模型单位直连线 = 300 米，而非 30000', () => {
+    const store = useProjectStore();
+    store.setProject(makeProject());
+    const cable = store.manualWire('devA', 'devB', [
+      { x: 5000, y: 5000 },
+      { x: 8000, y: 5000 },
+    ]);
+    // 旧实现 length*scale 会把线长放大 scale² 倍（此处 1e5 倍）
+    expect(cable.length).toBeCloseTo(300, 6);
+    expect(cable.correctedLength).toBeCloseTo(315, 6); // 1.05 富余
+  });
+
+  it('未校准（scale=1）时按 1 单位=1mm 解释：3000 单位 = 3 米', () => {
+    const store = useProjectStore();
+    const project = makeProject();
+    project.drawings[0].calibration = { isCalibrated: false, point1: { x: 0, y: 0 }, point2: { x: 0, y: 0 }, realDistance: 0, scale: 1, unit: 'm' };
+    store.setProject(project);
+    const cable = store.manualWire('devA', 'devB', [
+      { x: 0, y: 0 },
+      { x: 3000, y: 0 },
+    ]);
+    expect(cable.length).toBeCloseTo(3, 6);
   });
 });

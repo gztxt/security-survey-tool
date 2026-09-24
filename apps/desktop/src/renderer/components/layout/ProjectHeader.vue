@@ -93,15 +93,17 @@
 </template>
 
 <script setup lang="ts">
-import { defineProps, defineEmits, computed, ref } from 'vue';
+import { defineProps, defineEmits, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useProjectStore } from '@/stores/project';
 import { useSettingsStore } from '@/stores/settings';
+import { useUiStore } from '@/stores/ui';
 import DrawingTabs from './DrawingTabs.vue';
 import AdvancedMenu from '@/components/common/AdvancedMenu.vue';
 
 const projectStore = useProjectStore();
 const settingsStore = useSettingsStore();
+const uiStore = useUiStore();
 const router = useRouter();
 const route = useRoute();
 
@@ -121,7 +123,8 @@ const emit = defineEmits<{
 
 const drawings = computed(() => projectStore.drawings);
 const currentDrawing = computed(() => projectStore.currentDrawing);
-const sidebarCollapsed = ref(false);
+// 折叠状态归 uiStore 单一事实源（侧栏面板内按钮同源，两处按钮状态同步）
+const sidebarCollapsed = computed(() => uiStore.sidebarCollapsed);
 
 function goToDashboard() {
   router.push({ name: 'project-dashboard', params: { id: props.project?.id } });
@@ -152,7 +155,7 @@ function exportProject() {
 }
 
 function toggleSidebar() {
-  sidebarCollapsed.value = !sidebarCollapsed.value;
+  uiStore.toggleSidebar();
 }
 
 function openSettings() {

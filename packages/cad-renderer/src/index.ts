@@ -78,6 +78,8 @@ export class CadRenderer {
   private weakPoints: WeakPoint[] = [];
   private cableTrays: CableTray[] = [];
   private fovs: Map<string, FieldOfView> = new Map();
+  /** deviceId -> 设备品类（dome/bullet/ptz/nvr/switch/rack/...），由宿主注入，用于差异化图形 */
+  private deviceCategories: Map<string, string> = new Map();
 
   /** 位图底图缓存：imagePath -> 已加载/加载中的 HTMLImageElement */
   private imageCache: Map<string, HTMLImageElement> = new Map();
@@ -125,6 +127,11 @@ export class CadRenderer {
 
   setDevices(devices: DeviceInstance[]): void {
     this.devices = devices;
+  }
+
+  /** 注入 deviceId → 品类映射（CanvasViewport 从设备库解析后调用），用于差异化图形 */
+  setDeviceCategories(map: Map<string, string> | Record<string, string>): void {
+    this.deviceCategories = map instanceof Map ? map : new Map(Object.entries(map || {}));
   }
 
   setCables(cables: Cable[]): void {
@@ -783,27 +790,65 @@ export class CadRenderer {
     const { ctx } = this;
     const half = size / 2;
 
-    // 根据类别绘制不同形状
-    // 实际项目中应使用 DeviceModel.icon 中的 SVG 路径
     ctx.fillStyle = selected ? SELECTION_COLOR : (hovered ? '#F59E0B' : '#3B82F6');
     ctx.strokeStyle = '#FFFFFF';
     ctx.lineWidth = 1.5 / this.viewport.zoom;
 
-    // 简化：半球=圆，枪机=矩形+三角形，球机=圆+方向指示
-    // 这里统一画圆+方向箭头
-    ctx.beginPath();
-    ctx.arc(0, 0, half, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
+    const category = this.deviceCategories.get(device.id) || '';
+    const isCamera = ['dome', 'bullet', 'ptz', 'panoramic', 'thermal', 'multi', 'fisheye'].includes(category);
 
-    // 朝向指示（小三角形）
-    ctx.fillStyle = '#FFFFFF';
-    ctx.beginPath();
-    ctx.moveTo(half * 0.8, 0);
-    ctx.lineTo(half * 0.3, -half * 0.3);
-    ctx.lineTo(half * 0.3, half * 0.3);
-    ctx.closePath();
-    ctx.fill();
+    if (category === 'switch') {
+      // 交换机：扁宽矩形 + 端口点
+      ctx.beginPath();
+      ctx.rect(-half, -half * 0.45, size, half * 0.9);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#FFFFFF';
+      for (let i = 0; i < 5; i++) {
+        ctx.fillRect(-half * 0.72 + i * (half * 0.36), -half * 0.14, half * 0.2, half * 0.28);
+      }
+    } else if (category === 'nvr') {
+      // 录像机：更宽的扁矩形 + 状态灯
+      ctx.beginPath();
+      ctx.rect(-half * 1.15, -half * 0.55, size * 1.15, half * 1.1);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.beginPath();
+      ctx.arc(-half * 0.85, 0, half * 0.16, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (category === 'rack') {
+      // 机柜：高矩形 + U 位分隔线
+      ctx.beginPath();
+      ctx.rect(-half * 0.65, -half * 1.25, size * 0.65, size * 1.25);
+      ctx.fill();
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = 1 / this.viewport.zoom;
+      for (let i = 1; i <= 3; i++) {
+        const y = -half * 1.25 + (size * 1.25 * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(-half * 0.65, y);
+        ctx.lineTo(half * 0.65 * 0.35, y);
+        ctx.stroke();
+      }
+    } else {
+      // 摄像头类与未知品类：圆 + 朝向三角（保持原视觉）
+      ctx.beginPath();
+      ctx.arc(0, 0, half, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      if (isCamera || !category) {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.moveTo(half * 0.8, 0);
+        ctx.lineTo(half * 0.3, -half * 0.3);
+        ctx.lineTo(half * 0.3, half * 0.3);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
   }
 
   private drawFov(fov: FieldOfView, zoom: number): void {

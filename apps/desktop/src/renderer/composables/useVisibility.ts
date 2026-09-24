@@ -105,9 +105,10 @@ export const NAV_ITEMS: NavItem[] = [
   { name: 'help', label: '帮助文档', primary: false, group: 'misc' },
 ];
 
-/** 常用设备快选（精简态内置默认，决策 5.1 右下浮层） */
+/** 常用设备快选（精简态内置默认，决策 5.1 右下浮层）：覆盖"布点→布线"工作流三类设备 */
 export const COMMON_DEVICE_KEYWORDS: string[] = [
-  '枪机', '半球', '球机', '摄像头', '摄像机', '机柜',
+  '枪机', '半球', '球机', '摄像头', '摄像机', '机柜', 'rack',
+  '交换机', 'switch', '录像机', 'nvr',
 ];
 
 /**

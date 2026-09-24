@@ -15,6 +15,7 @@
     "lint": "eslint . --ext .vue,.ts,.tsx --fix",
     "test:unit": "vitest",
     "test:e2e": "playwright test",
+    "smoke": "xvfb-run -a node scripts/smoke/run.cjs",
     "postinstall": "electron-builder install-app-deps || true"
   },
   "dependencies": {
