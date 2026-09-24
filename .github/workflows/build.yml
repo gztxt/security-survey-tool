@@ -19,6 +19,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # pnpm 必须先于 setup-node 安装：setup-node 的 cache: 'pnpm' 需要在缓存步骤执行前
+      # 就能定位 pnpm 可执行文件（Run #1/#2 正是死在这里：Unable to locate executable file: pnpm）。
+      # 版本不写死：action 会读 package.json 的 packageManager 字段（当前 pnpm@11.22.0）。
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
