@@ -28,7 +28,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # 20 → 22：被钉死的 pnpm@11.22.0 要求 node >=22.13（registry engines 实测），
+          # 在 node 20.20.2 上 pnpm 直接 ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite。
+          # 与 README「smoke 需 node ≥ 22」一致；勿降到 20。
+          node-version: '22'
           cache: 'pnpm'
           cache-dependency-path: '**/pnpm-lock.yaml'
 
