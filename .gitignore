@@ -27,3 +27,22 @@ __pycache__/
 # 历史备份文件：源码树内不再入库；已 git mv 归档至 _archive/（归档区保留跟踪）
 *.bak-*
 !_archive/**
+
+# ── 2026-09-25 追加（PT-20260925-16；防「一次 git add -A && push 即不可逆公开泄露」）──
+# 起因：本仓已是**公开仓**（`git ls-remote` + GitHub API 实测 `private:False`、`default_branch:master`），
+# 而下列三处 agent 残留**均未被忽略**（`git check-ignore -v` 实测 NOT-IGNORED），且
+# `.workbuddy/memory/MEMORY.md`、`.workbuddy/overview/fix-run-program-20260903.md` 内含内网 SMB 地址
+# （内网 SMB/UNC 主机地址形态，具体值不写入本文件）。`.repo-memory/` 28K、`.workbuddy/` 52K、`_tmp_8060_*` 0B。
+.workbuddy/
+.repo-memory/
+# 注：`_tmp_8060_…` 实测是 **0 字节普通文件**（非目录，`ls -ld` → `-rwx---rwx 2 … 0 Sep  2 23:29`），
+# 故此处不能写 `_tmp_*/`（尾斜杠只匹配目录，实测不生效），必须写 `_tmp_*`。
+_tmp_*
+# TS 增量构建信息：当前**已有 6 个被跟踪**（`git ls-files | grep -c tsbuildinfo` = 6），每次构建都脏
+# （2026-09-25 取证时 `git status` 的 `6 M` 全部是它）。忽略只对**未跟踪**者生效；
+# 已跟踪那 6 个需另行 `git rm --cached`（属索引变更，与他会话未提交状态交织，本轮**未做**，见 PT-20260925-16）。
+*.tsbuildinfo
+# 修正上方 `!_archive/**` 的副作用：它把 `_archive/**/__pycache__` 与 `*.pyc` 重新纳入
+# （`git check-ignore -v` 实测命中 `.gitignore:29:!_archive/**`），造成 2 个 `??`。
+_archive/**/__pycache__/
+_archive/**/*.pyc
