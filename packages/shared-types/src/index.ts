@@ -319,6 +319,7 @@ export type DeviceCategory =
   | 'nvr'        // 录像机
   | 'switch'     // 交换机
   | 'rack'       // 机柜
+  | 'ap'         // 无线AP
   | 'other';
 
 export type DeviceType =
@@ -332,6 +333,7 @@ export type DeviceType =
   | 'ip_door' | 'video_door'
   | 'nvr_4ch' | 'nvr_8ch' | 'nvr_16ch' | 'nvr_32ch' | 'nvr_64ch' | 'nvr_128ch'
   | 'poe_switch_4' | 'poe_switch_8' | 'poe_switch_16' | 'poe_switch_24' | 'core_switch'
+  | 'ap_ceiling' | 'ap_wall' | 'ap_outdoor'
   | 'custom';
 
 export interface DeviceSpecs {
@@ -606,6 +608,7 @@ export const DEVICE_CATEGORY_LABELS: Record<DeviceCategory, string> = {
   nvr: '录像机',
   switch: '交换机',
   rack: '机柜',
+  ap: '无线AP',
   other: '其他',
 };
 
@@ -630,3 +633,159 @@ export const VIEWPORT_DEFAULTS: ViewportState = {
 export type GraphicEntity = CadEntity;
 /** Layer 为 CadLayer 的历史命名别名 */
 export type Layer = CadLayer;
+
+// ============ 图元几何编辑（删除/移动底图图元的基础设施）============
+//
+// 历史缺陷：底图图元只能看不能改 —— 选中后按 Delete 是空循环，拖动也无响应。
+// 移动一个图元 = 平移它 data 里的所有点 + 同步重算 bounds（渲染器与导出都按
+// bounds 做视口裁剪，只改点不改 bounds 会在缩放后被裁掉）。
+// 放在 shared-types 是为了让 store / 渲染器 / 导出共用同一份实现，
+// 避免"移动后导出仍画在原位"这类分叉。
+
+function isPoint(v: unknown): v is Point2D {
+  return !!v && typeof (v as Point2D).x === 'number' && typeof (v as Point2D).y === 'number';
+}
+
+function shiftPoint(p: unknown, dx: number, dy: number): boolean {
+  if (!isPoint(p)) return false;
+  p.x += dx;
+  p.y += dy;
+  return true;
+}
+
+function shiftPointList(list: unknown, dx: number, dy: number): boolean {
+  if (!Array.isArray(list)) return false;
+  let moved = false;
+  for (const p of list) {
+    if (shiftPoint(p, dx, dy)) moved = true;
+  }
+  return moved;
+}
+
+/** 就地重算图元包围盒（收集 data 内所有点） */
+export function recomputeEntityBounds(entity: CadEntity): void {
+  const pts: Point2D[] = [];
+  const d = entity?.data as any;
+  if (!d) return;
+  const push = (v: unknown) => { if (isPoint(v)) pts.push(v); };
+  switch (entity.type) {
+    case 'LINE': push(d.start); push(d.end); break;
+    case 'LWPOLYLINE':
+    case 'POLYLINE':
+      if (Array.isArray(d.vertices)) for (const v of d.vertices) push(v);
+      break;
+    case 'ARC':
+    case 'CIRCLE':
+    case 'ELLIPSE':
+      if (isPoint(d.center) && typeof d.radius === 'number') {
+        pts.push({ x: d.center.x - d.radius, y: d.center.y - d.radius });
+        pts.push({ x: d.center.x + d.radius, y: d.center.y + d.radius });
+      }
+      break;
+    case 'TEXT':
+    case 'MTEXT':
+      push(d.position);
+      break;
+    case 'INSERT':
+    case 'BLOCK':
+      push(d.position);
+      break;
+    case 'HATCH':
+      if (Array.isArray(d.loops)) {
+        for (const loop of d.loops) if (Array.isArray(loop)) for (const v of loop) push(v);
+      }
+      break;
+    case 'DIMENSION':
+      if (Array.isArray(d.defPoints)) for (const v of d.defPoints) push(v);
+      push(d.textPosition);
+      break;
+    case 'POINT': push(d.position); break;
+    case 'SPLINE':
+    case 'HELIX':
+      if (Array.isArray(d.controlPoints)) for (const v of d.controlPoints) push(v);
+      break;
+    case 'IMAGE':
+    case 'WIPEOUT':
+      if (isPoint(d.position) && d.size) {
+        const w = Number(d.size.width) || 0;
+        const h = Number(d.size.height) || 0;
+        pts.push({ x: d.position.x, y: d.position.y });
+        pts.push({ x: d.position.x + w, y: d.position.y + h });
+      }
+      break;
+    default: break;
+  }
+  if (!pts.length) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  entity.bounds = { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * 就地平移图元几何（模型坐标）。
+ * 返回是否真的移动了：类型不支持 / 位移非有限值 / 位移为 0 时返回 false，
+ * 调用方据此决定是否收一步历史（避免"点一下"产生空历史）。
+ */
+export function translateCadEntity(entity: CadEntity, dx: number, dy: number): boolean {
+  if (!entity || !Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+  if (dx === 0 && dy === 0) return false;
+  const d = entity.data as any;
+  if (!d) return false;
+
+  let moved = false;
+  const mark = (ok: boolean) => { if (ok) moved = true; };
+
+  switch (entity.type) {
+    case 'LINE':
+      mark(shiftPoint(d.start, dx, dy));
+      mark(shiftPoint(d.end, dx, dy));
+      break;
+    case 'LWPOLYLINE':
+    case 'POLYLINE':
+      mark(shiftPointList(d.vertices, dx, dy));
+      break;
+    case 'ARC':
+    case 'CIRCLE':
+    case 'ELLIPSE':
+      mark(shiftPoint(d.center, dx, dy));
+      break;
+    case 'TEXT':
+    case 'MTEXT':
+      mark(shiftPoint(d.position, dx, dy));
+      break;
+    case 'INSERT':
+    case 'BLOCK':
+      mark(shiftPoint(d.position, dx, dy));
+      break;
+    case 'HATCH':
+      if (Array.isArray(d.loops)) {
+        for (const loop of d.loops) mark(shiftPointList(loop, dx, dy));
+      }
+      break;
+    case 'DIMENSION':
+      mark(shiftPointList(d.defPoints, dx, dy));
+      mark(shiftPoint(d.textPosition, dx, dy));
+      break;
+    case 'POINT':
+      mark(shiftPoint(d.position, dx, dy));
+      break;
+    case 'SPLINE':
+    case 'HELIX':
+      mark(shiftPointList(d.controlPoints, dx, dy));
+      break;
+    case 'IMAGE':
+    case 'WIPEOUT':
+      mark(shiftPoint(d.position, dx, dy));
+      break;
+    default:
+      return false; // 未知类型：宁可不动，也不要移动一半留下错位几何
+  }
+
+  if (moved) recomputeEntityBounds(entity);
+  return moved;
+}
