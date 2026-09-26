@@ -694,6 +694,76 @@ async function realClick(p, x, y) {
     exportClicked === 'clicked' && !/开发中|失败|不在列表中/.test(a.toast),
     'click=' + exportClicked + ' toast=' + a.toast);
 
+  // ===== R15 点位图导出 WYSIWYG 契约（真实导出 + 产物像素级验证） =====
+  // 历史缺陷：导出 PNG 空白（离屏重绘无白底 + 超大画布静默失败）、PDF 带删不掉
+  // 的"图例"装饰、导出内容与编辑视图不符。修复后契约：导出 = 画布快照（剔除
+  // 网格/标尺/高亮），像素非空白。
+  // 真实 UI 路径前置：先进导出页（ExportView 挂载 ⇒ export store 注册 + onMounted
+  // 请求补捕快照），再走 store.runExport（与「开始导出」按钮同一函数；原生保存
+  // 对话框无法被 CDP 驱动，故产物 base64 在页面内解码验证，不落盘）。
+  const exportPng = await ev(p, `
+    // 1) 真实导航到导出页（hash 路由，与侧栏点击等效）
+    location.hash = '#/project/' + (JSON.parse(localStorage.getItem('projects-index')||'[]')[0]||{}).id + '/export';
+    await new Promise(r=>setTimeout(r,2500));
+    const app = document.querySelector('#app').__vue_app__;
+    const pinia = app.config.globalProperties.$pinia;
+    const pStore = pinia._s.get('project');
+    const eStore = pinia._s.get('export');
+    if (!pStore || !pStore.currentProject) return { ok:false, why:'project-store-missing', hash: location.hash };
+    if (!eStore) return { ok:false, why:'export-store-missing(ExportView未挂载?)', hash: location.hash };
+    // 2) 画布已卸载（在导出页）：drawingSnapshots 应持有编辑页留下的快照
+    const snaps = pStore.drawingSnapshots || {};
+    const drawing = pStore.currentProject.drawings.find(d => (d.devices||[]).length >= 2);
+    if (!drawing) return { ok:false, why:'no-drawing-with-devices', snaps:Object.keys(snaps) };
+    if (!snaps[drawing.id]) return { ok:false, why:'no-snapshot-for-drawing', snaps:Object.keys(snaps) };
+    // 3) 走真实导出引擎（主进程 IPC → 渲染进程快照通道）
+    const res = await eStore.runExport({
+      project: pStore.currentProject,
+      types: ['pointmap'],
+      format: 'png',
+      canvasSnapshots: snaps,
+      projectName: '冒烟导出',
+    });
+    const f = (res.files||[]).find(x => x.format === 'png');
+    if (!f) return { ok:false, why:'no-png', errors: res.errors, snaps:Object.keys(snaps) };
+    // 4) PNG 魔数 + IHDR 尺寸 + 像素采样（非纯背景空白）
+    const b64 = f.dataBase64;
+    const bin = atob(b64);
+    const magicOk = bin.charCodeAt(0) === 0x89 && bin.substr(1,3) === 'PNG';
+    const w = (bin.charCodeAt(16)<<24)|(bin.charCodeAt(17)<<16)|(bin.charCodeAt(18)<<8)|bin.charCodeAt(19);
+    const h = (bin.charCodeAt(20)<<24)|(bin.charCodeAt(21)<<16)|(bin.charCodeAt(22)<<8)|bin.charCodeAt(23);
+    const img = await new Promise((res2, rej) => {
+      const im = new Image();
+      im.onload = () => res2(im);
+      im.onerror = () => rej(new Error('img-decode-fail'));
+      im.src = 'data:image/png;base64,' + b64;
+    });
+    const cv = document.createElement('canvas');
+    cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+    const cx = cv.getContext('2d');
+    cx.drawImage(img, 0, 0);
+    const data = cx.getImageData(0, 0, cv.width, cv.height).data;
+    let nonBg = 0, total = cv.width * cv.height;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i+1], b = data[i+2];
+      if (r>245 && g>245 && b>245) continue;  // 白/近白背景（快照垫底或画布底色）
+      nonBg++;
+    }
+    return { ok:true, path: f.path, magicOk, w, h,
+      nonBgRatio: +(nonBg/total).toFixed(4), bytes: b64.length,
+      hadSnapshot: true, errors: (res.errors||[]) };
+  `);
+  check('R15a', '点位图导出真实产出非空白 PNG（快照通道 + 像素采样）',
+    exportPng.ok === true && exportPng.magicOk === true &&
+    exportPng.w > 100 && exportPng.h > 100 &&
+    exportPng.nonBgRatio > 0.001,
+    JSON.stringify(exportPng));
+  check('R15b', '导出文件名是人话（*_点位图.png），不再用 drawingId 机器名',
+    exportPng.ok === true && /点位图\.png$/.test(exportPng.path || ''),
+    'path=' + (exportPng.path || exportPng.why));
+  // 回列表页，恢复后续断言的页面语境
+  await ev(p, `location.hash='#/projects'; await new Promise(r=>setTimeout(r,1200)); return 1;`);
+
   // ===== R10 渲染进程未抛未捕获异常 =====
   const errs = p.events.filter(e => e.method === 'Runtime.exceptionThrown')
     .map(e => ((e.params.exceptionDetails.exception || {}).description) || e.params.exceptionDetails.text);
