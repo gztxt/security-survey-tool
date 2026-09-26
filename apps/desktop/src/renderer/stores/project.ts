@@ -1,8 +1,8 @@
 // 项目状态管理
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { Project, Drawing, DeviceInstance, Cable, CableType, WeakPoint, CableTray, WiringNetwork, ViewportState, CalibrationData, Point2D } from '@security-survey/shared-types';
-import { modelUnitsToMeters } from '@security-survey/shared-types';
+import type { Project, Drawing, DeviceInstance, Cable, CableType, WeakPoint, CableTray, WiringNetwork, ViewportState, CalibrationData, Point2D, CadEntity } from '@security-survey/shared-types';
+import { modelUnitsToMeters, translateCadEntity } from '@security-survey/shared-types';
 import { rehydrateBasemapEntity } from '@/services/basemapService';
 
 export const useProjectStore = defineStore('project', () => {
@@ -117,11 +117,24 @@ export const useProjectStore = defineStore('project', () => {
   // 布线"做快照：变更前压栈，undo 时整体回填，语义与用户预期一致。
   // 视口/校准/图层显隐不进历史（高频且非破坏性）。
 
+  /**
+   * 图元历史用「稀疏条目」而不是整图拷贝：一张 CAD 底图动辄上万图元，
+   * 每步历史都整图深拷贝会吃满内存并拖慢拖拽。只记录本次操作涉及的图元。
+   * entity 为该 id 在快照时刻的状态；null 表示当时它并不存在（已被删除），
+   * 还原时按"删掉它"处理 —— 这样同一份结构既能表达撤销也能表达重做。
+   */
+  interface EntityPatchEntry {
+    id: string;
+    index: number;            // 快照时刻在 entities 中的下标（回填位置）
+    entity: CadEntity | null;
+  }
+
   interface StructuralSnapshot {
     drawingId: string;
     label: string;
     devices: DeviceInstance[];
     wiring: WiringNetwork;
+    entities?: EntityPatchEntry[];
   }
 
   const undoStack = ref<StructuralSnapshot[]>([]);
@@ -152,7 +165,22 @@ export const useProjectStore = defineStore('project', () => {
     };
   }
 
-  function takeSnapshot(label: string): StructuralSnapshot | null {
+  /** 记录给定图元在"当下"的深拷贝状态（删除前的样子 / 移动前的位置） */
+  function captureEntityPatch(d: Drawing, ids: string[]): EntityPatchEntry[] {
+    if (!d || !ids.length) return [];
+    const list = d.entities || [];
+    const wanted = new Set(ids);
+    const out: EntityPatchEntry[] = [];
+    list.forEach((e, index) => {
+      if (wanted.has(e.id)) out.push({ id: e.id, index, entity: deepClone(e) });
+    });
+    for (const id of ids) {
+      if (!out.some(o => o.id === id)) out.push({ id, index: list.length, entity: null });
+    }
+    return out;
+  }
+
+  function takeSnapshot(label: string, entityIds?: string[]): StructuralSnapshot | null {
     const d = currentDrawing.value;
     if (!d) return null;
     return {
@@ -160,7 +188,32 @@ export const useProjectStore = defineStore('project', () => {
       label,
       devices: deepClone(d.devices ?? []),
       wiring: deepClone(d.wiring ?? emptyWiring(d)),
+      entities: entityIds && entityIds.length ? captureEntityPatch(d, entityIds) : undefined,
     };
+  }
+
+  /** 把一次图元变更并入外层批量快照：保证"批量删除设备+图元"仍是一步撤销 */
+  function mergeEntityPatch(patch: EntityPatchEntry[]) {
+    if (!batchSnapshot || !patch.length) return;
+    const list = batchSnapshot.entities || (batchSnapshot.entities = []);
+    for (const p of patch) {
+      if (!list.some(x => x.id === p.id)) list.push(p);
+    }
+  }
+
+  /** 按补丁回填图元：有则替换/删除，无则按原下标插回（升序插入保证下标不漂移） */
+  function applyEntityPatch(d: Drawing, patch: EntityPatchEntry[]) {
+    const list = d.entities || (d.entities = []);
+    const ordered = [...patch].sort((a, b) => a.index - b.index);
+    for (const entry of ordered) {
+      const i = list.findIndex(e => e.id === entry.id);
+      if (i >= 0) {
+        if (entry.entity) list[i] = deepClone(entry.entity);
+        else list.splice(i, 1);
+      } else if (entry.entity) {
+        list.splice(Math.min(entry.index, list.length), 0, deepClone(entry.entity));
+      }
+    }
   }
 
   function pushSnapshot(snapshot: StructuralSnapshot | null) {
@@ -198,6 +251,7 @@ export const useProjectStore = defineStore('project', () => {
     if (!d) return false;
     d.devices = deepClone(snapshot.devices);
     d.wiring = deepClone(snapshot.wiring);
+    if (snapshot.entities && snapshot.entities.length) applyEntityPatch(d, snapshot.entities);
     d.updatedAt = Date.now();
     markDirty();
     return true;
@@ -209,7 +263,7 @@ export const useProjectStore = defineStore('project', () => {
     if (!snapshot) return false;
     // 历史按图纸隔离：图纸不匹配（已切换或已删除）时不跨图纸回滚
     if (currentDrawingId.value !== snapshot.drawingId) return false;
-    const current = takeSnapshot(snapshot.label);
+    const current = takeSnapshot(snapshot.label, snapshot.entities?.map(e => e.id));
     const target = drawings.value.find(item => item.id === snapshot.drawingId);
     if (!target) { undoStack.value.pop(); return false; }
     undoStack.value.pop();
@@ -224,7 +278,7 @@ export const useProjectStore = defineStore('project', () => {
     if (currentDrawingId.value !== snapshot.drawingId) return false;
     const target = drawings.value.find(item => item.id === snapshot.drawingId);
     if (!target) { redoStack.value.pop(); return false; }
-    const current = takeSnapshot(snapshot.label);
+    const current = takeSnapshot(snapshot.label, snapshot.entities?.map(e => e.id));
     redoStack.value.pop();
     if (current) undoStack.value.push(current);
     return restoreSnapshot(snapshot);
@@ -888,6 +942,98 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
+  // ============ 底图图元编辑（删除 / 移动 / 改属性）============
+  //
+  // 历史缺陷：选中 CAD 图元后按 Delete 是空循环（CanvasViewport.deleteSelected
+  // 里"删除图元（如果支持）"注释下没有任何代码），拖动图元同样无响应 ——
+  // 用户只能整张底图重新导入。这里把图元纳入与设备同一套历史机制：
+  // 删除/移动/改属性均可一步撤销。
+
+  /** 捕获图元当前状态（深拷贝）：拖拽/编辑前记录 before 态 */
+  function captureEntities(ids: string[]): EntityPatchEntry[] {
+    const d = currentDrawing.value;
+    return d ? captureEntityPatch(d, ids) : [];
+  }
+
+  /** 删除底图图元。批量调用时并入外层批快照，整批仍是一步撤销 */
+  function removeEntities(ids: string[]): number {
+    const d = currentDrawing.value;
+    if (!d || !ids.length) return 0;
+    const wanted = new Set(ids);
+    // 先确认真的有图元会被删：id 全部不存在时不该压一步"什么都没发生"的历史
+    // （否则框选后误按 Delete 会攒下一串空 undo 步）
+    const hit = (d.entities || []).filter(e => wanted.has(e.id));
+    if (!hit.length) return 0;
+    const patch = captureEntityPatch(d, hit.map(e => e.id));
+    const set = new Set(hit.map(e => e.id));
+    const before = (d.entities || []).length;
+    if (historyBatchDepth > 0) {
+      mergeEntityPatch(patch);
+    } else {
+      pushSnapshot({
+        drawingId: d.id,
+        label: ids.length > 1 ? `删除 ${ids.length} 个图元` : '删除图元',
+        devices: deepClone(d.devices ?? []),
+        wiring: deepClone(d.wiring ?? emptyWiring(d)),
+        entities: patch,
+      });
+    }
+    d.entities = (d.entities || []).filter(e => !set.has(e.id));
+    d.updatedAt = Date.now();
+    markDirty();
+    return before - (d.entities || []).length;
+  }
+
+  /** 平移图元几何（拖拽中高频调用，不进历史），返回实际移动的图元数 */
+  function translateEntities(ids: string[], dx: number, dy: number): number {
+    const d = currentDrawing.value;
+    if (!d || !ids.length) return 0;
+    const set = new Set(ids);
+    let n = 0;
+    for (const e of d.entities || []) {
+      if (!set.has(e.id)) continue;
+      if (translateCadEntity(e, dx, dy)) n += 1;
+    }
+    if (n) {
+      d.updatedAt = Date.now();
+      markDirty();
+    }
+    return n;
+  }
+
+  /**
+   * 提交一次图元变更：把 before 态压入历史（拖拽结束 / 属性编辑收口）。
+   * 处于批量内时不单独压栈，并入外层批快照。
+   */
+  function commitEntities(label: string, before: EntityPatchEntry[]) {
+    const d = currentDrawing.value;
+    if (!d || !before.length) return;
+    if (historyBatchDepth > 0) { mergeEntityPatch(before); return; }
+    pushSnapshot({
+      drawingId: d.id,
+      label,
+      devices: deepClone(d.devices ?? []),
+      wiring: deepClone(d.wiring ?? emptyWiring(d)),
+      entities: before,
+    });
+  }
+
+  /** 单图元属性修改（图层/颜色/可见性等），纳入历史 */
+  function updateEntity(id: string, updates: Partial<CadEntity>): boolean {
+    const d = currentDrawing.value;
+    if (!d) return false;
+    const list = d.entities || [];
+    const idx = list.findIndex(e => e.id === id);
+    if (idx < 0) return false;
+    const patch = captureEntityPatch(d, [id]);
+    list[idx] = { ...list[idx], ...updates };
+    d.entities = [...list];
+    d.updatedAt = Date.now();
+    markDirty();
+    commitEntities('修改图元属性', patch);
+    return true;
+  }
+
   function addCable(cable: Cable) {
     if (currentDrawing.value) {
       withHistory('添加线路', () => {
@@ -1069,6 +1215,11 @@ export const useProjectStore = defineStore('project', () => {
     addDevice,
     updateDevice,
     removeDevice,
+    captureEntities,
+    removeEntities,
+    translateEntities,
+    commitEntities,
+    updateEntity,
     addCable,
     updateCable,
     removeCable,

@@ -359,7 +359,10 @@ export class CadRenderer {
 
     // 视口裁剪
     const viewBounds = this.getViewBounds();
+    // visible===false 是"图元级隐藏"（右键菜单/属性改的），必须在这里就滤掉：
+    // 此前只认图层显隐，用户隐藏了图元画面却照旧，等于功能骗人。
     const visibleEntities = entitiesToRender.filter(e =>
+      e.visible !== false &&
       e.bounds.maxX >= viewBounds.minX &&
       e.bounds.minX <= viewBounds.maxX &&
       e.bounds.maxY >= viewBounds.minY &&
@@ -381,6 +384,7 @@ export class CadRenderer {
     const { ctx } = this;
 
     for (const entity of entities) {
+      if (entity.visible === false) continue;
       const layer = this.layers.get(entity.layer);
       if (layer && !layer.visible) continue;
 
@@ -972,6 +976,7 @@ export class CadRenderer {
     // 再拾取 CAD 图元（跳过 BASEMAP 底图，避免误选误操作，AC-1.4）
     for (const entity of this.entities) {
       if (entity.layer === 'BASEMAP') continue;
+      if (entity.visible === false) continue;
       if (this.entityHitTest(entity, modelPos, tolerance)) {
         return `entity:${entity.id}`;
       }

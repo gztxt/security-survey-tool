@@ -229,6 +229,20 @@ const isPanning = ref(false);
 const panStart = ref<Point2D>({ x: 0, y: 0 });
 /** 本次拖拽开始时的位置快照，拖完作为一步历史压栈 */
 const dragBefore = ref<Record<string, Point2D>>({});
+/**
+ * 底图图元拖拽态：与设备拖拽同构 —— 阈值内位移按"点击选择"处理，
+ * 超阈值则整组随动。before 是拖拽前的图元深拷贝，松手时作为一步历史压栈。
+ * lastDx/lastDy 记录已施加的位移：鼠标每帧给的是"相对起点"的位移，
+ * 图元平移是增量操作，必须减去已施加的部分，否则图元会被越拖越快。
+ */
+const entityDrag = ref<{
+  ids: string[];
+  startModel: Point2D;
+  moved: boolean;
+  lastDx: number;
+  lastDy: number;
+  before: ReturnType<typeof projectStore.captureEntities>;
+} | null>(null);
 const selectionBox = ref<{ start: Point2D; end: Point2D; additive: boolean; subtract: boolean } | null>(null);
 const selectedEntities = ref<string[]>([]);
 const selectedDevices = ref<string[]>([]);
@@ -563,6 +577,34 @@ function onMouseMove(e: MouseEvent) {
     return;
   }
 
+  if (entityDrag.value) {
+    const cur = hoverPosition.value;
+    const start = entityDrag.value.startModel;
+    // 与设备同一套阈值：3px 以内算点击，避免"点一下选中"产生一步空历史
+    const entityThreshold = 3 / viewport.value.zoom;
+    if (!entityDrag.value.moved &&
+        Math.hypot(cur.x - start.x, cur.y - start.y) < entityThreshold) return;
+    entityDrag.value.moved = true;
+    // 吸附：把"起点 + 位移"吸附到网格，再反推实际位移，
+    // 这样拖动过程中图元始终落在网格上（与设备拖拽一致）
+    const snapped = snapPoint({ x: start.x + (cur.x - start.x), y: start.y + (cur.y - start.y) });
+    const targetDx = snapped.x - start.x;
+    const targetDy = snapped.y - start.y;
+    const stepDx = targetDx - entityDrag.value.lastDx;
+    const stepDy = targetDy - entityDrag.value.lastDy;
+    if (stepDx === 0 && stepDy === 0) return;
+    const movedCount = projectStore.translateEntities(entityDrag.value.ids, stepDx, stepDy);
+    if (!movedCount) {
+      // 图元类型不支持平移（未知类型）/ 已被删掉：立刻收手，
+      // 否则 lastDx 不推进，后续每帧都会把位移重复叠加，图元越拖越快
+      entityDrag.value = null;
+      return;
+    }
+    entityDrag.value.lastDx = targetDx;
+    entityDrag.value.lastDy = targetDy;
+    return;
+  }
+
   if (isPanning.value) {
     const dx = pos.x - panStart.value.x;
     const dy = pos.y - panStart.value.y;
@@ -608,6 +650,15 @@ function onMouseUp(e: MouseEvent) {
     }
     deviceDrag.value = null;
     dragBefore.value = {};
+  }
+
+  // 图元拖拽收尾：真位移过才收一步历史（整组移动 = 一次撤销）
+  if (entityDrag.value) {
+    if (entityDrag.value.moved) {
+      const n = entityDrag.value.ids.length;
+      projectStore.commitEntities(n > 1 ? `移动 ${n} 个图元` : '移动图元', entityDrag.value.before);
+    }
+    entityDrag.value = null;
   }
 
   if (selectionBox.value) {
@@ -684,8 +735,14 @@ function onContextMenu(e: MouseEvent) {
         { label: '删除', action: 'delete-well', data: picked.split(':')[1], danger: true },
       );
     } else if (picked.startsWith('entity:')) {
+      const entityId = picked.split(':')[1];
+      const entity = entities.value.find(en => en.id === entityId);
+      const hidden = entity?.visible === false;
       items.push(
-        { label: '图元信息', action: 'entity-info', data: picked.split(':')[1] },
+        { label: hidden ? '显示图元' : '隐藏图元', action: 'toggle-entity-visible', data: entityId },
+        { label: '删除图元', action: 'delete-entity', data: entityId, danger: true },
+        { type: 'separator' },
+        { label: '图元信息', action: 'entity-info', data: entityId },
       );
     }
   } else {
@@ -755,10 +812,10 @@ function placeAtScreen(screenPos: Point2D) {
   placeDevice(modelPos);
 }
 
-/** 设备库拖拽进入画布：仅对内部设备拖拽显示 copy 光标 */
+/** 设备库 / 布线材料拖拽进入画布：仅对内部拖拽显示 copy 光标 */
 function onCanvasDragOver(e: DragEvent) {
   const types = e.dataTransfer?.types || [];
-  if (types.includes('application/device')) {
+  if (types.includes('application/device') || types.includes('application/cable')) {
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
@@ -768,6 +825,18 @@ function onCanvasDragOver(e: DragEvent) {
 /** 设备库拖拽落点放置：取 application/device 数据 → 设为当前型号 → 按落点坐标布点 */
 function onCanvasDrop(e: DragEvent) {
   const types = e.dataTransfer?.types || [];
+  // 布线材料（网线/光纤/电源线）：拖进来 = 选线种并进入布线，
+  // 之后点两台设备即成缆。此前左侧面板没有线缆入口，线种还被硬编码成 cat6。
+  if (types.includes('application/cable')) {
+    e.preventDefault();
+    e.stopPropagation();
+    const cableId = e.dataTransfer?.getData('application/cable');
+    if (cableId) {
+      uiStore.startWiring(cableId as any);
+      wireHint.value = `已选择线种 ${cableId}：点击起点设备，再点击终点设备`;
+    }
+    return;
+  }
   if (!types.includes('application/device')) return; // 文件拖拽交给宿主视图导入链
   e.preventDefault();
   e.stopPropagation();
@@ -882,7 +951,7 @@ function finishWire(modelPos: Point2D, explicitEndId: string | null = null) {
   }
 
   if (endId && endId !== wireStartId.value && wireStartId.value && wireStartId.value !== 'free') {
-    const cable = projectStore.manualWire(wireStartId.value, endId, path, 'cat6');
+    const cable = projectStore.manualWire(wireStartId.value, endId, path, uiStore.activeCableType);
     if (cable) {
       emit('cable-created', cable);
     }
@@ -986,6 +1055,20 @@ function handleSelect(pos: Point2D, modelPos: Point2D, e: MouseEvent) {
     }
   }
 
+  // 命中底图图元同样起手"潜在拖拽"（此前只有设备可拖，图元选中后无法搬动）
+  if (!e.ctrlKey && !e.metaKey && picked?.startsWith('entity:')) {
+    const id = picked.split(':')[1];
+    const dragIds = selectedEntities.value.includes(id) ? [...selectedEntities.value] : [id];
+    entityDrag.value = {
+      ids: dragIds,
+      startModel: modelPos,
+      moved: false,
+      lastDx: 0,
+      lastDy: 0,
+      before: projectStore.captureEntities(dragIds),
+    };
+  }
+
   if (e.ctrlKey || e.metaKey) {
     // 多选
     if (picked) {
@@ -1078,16 +1161,22 @@ function handleBoxSelection(box: { start: Point2D; end: Point2D; additive: boole
 }
 
 function deleteSelected() {
+  const devCount = selectedDevices.value.length;
+  const entCount = selectedEntities.value.length;
+  if (!devCount && !entCount) return;
   // 批量删除只算一步历史：一次 Ctrl+Z 应能撤销整批误删
-  projectStore.runBatched(`删除 ${selectedDevices.value.length} 个设备`, () => {
-    for (const id of [...selectedDevices.value]) {
-      projectStore.removeDevice(id);
-    }
-    for (const id of [...selectedEntities.value]) {
-      // 删除图元（如果支持）
-    }
-    clearSelection();
-  });
+  projectStore.runBatched(
+    `删除 ${devCount} 个设备${entCount ? `、${entCount} 个图元` : ''}`,
+    () => {
+      for (const id of [...selectedDevices.value]) {
+        projectStore.removeDevice(id);
+      }
+      // 底图图元（墙线/门窗/标注等）此前删不掉：这里原是空循环，
+      // 选中图元按 Delete 毫无反应，只能整张底图重新导入。
+      if (entCount) projectStore.removeEntities([...selectedEntities.value]);
+      clearSelection();
+    },
+  );
 }
 
 /** 清空选中集：状态、跨组件广播（属性面板）、渲染器高亮三处同步 */
@@ -1101,18 +1190,20 @@ function clearSelection() {
 }
 
 /**
- * 全选当前图纸设备（Ctrl+A 宣称"选择所有对象"）。CAD 图元暂不纳入：
- * 图元删除链尚未落地（deleteSelected 里对 entities 是空循环），把
- * 删不掉的图元标成选中是另一种误导，等图元删除可用后再扩。
+ * 全选当前图纸的可编辑对象（Ctrl+A 宣称"选择所有对象"）。
+ * 图元删除/移动链已落地，故 CAD 图元一并纳入；只选可见图元 ——
+ * 已隐藏的图元不在画面上，把它们标成选中同样是一种误导。
  */
 function selectAll() {
-  if (!devices.value.length) return;
-  selectedEntities.value = [];
-  selectedDevices.value = devices.value.map(d => d.id);
+  const devIds = devices.value.map(d => d.id);
+  const entIds = entities.value.filter(e => e.visible !== false).map(e => e.id);
+  if (!devIds.length && !entIds.length) return;
+  selectedDevices.value = devIds;
+  selectedEntities.value = entIds;
   emit('device-selected', selectedDevices.value);
-  uiStore.setSelection(null, null);
-  renderer.value?.setSelectedDevices(new Set(selectedDevices.value));
-  renderer.value?.setSelectedEntities(new Set());
+  uiStore.setSelection(devIds.length === 1 ? devIds[0] : null, null);
+  renderer.value?.setSelectedDevices(new Set(devIds));
+  renderer.value?.setSelectedEntities(new Set(entIds));
 }
 
 // 视口操作
@@ -1503,6 +1594,16 @@ function handleContextAction(action: string, data: any) {
     case 'paste':
       pasteFromClipboard();
       break;
+    case 'delete-entity': {
+      selectedEntities.value = [data];
+      deleteSelected();
+      break;
+    }
+    case 'toggle-entity-visible': {
+      const entity = entities.value.find(en => en.id === data);
+      projectStore.updateEntity(data, { visible: entity?.visible === false });
+      break;
+    }
     case 'entity-info':
       break;
   }
