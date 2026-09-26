@@ -476,9 +476,21 @@ export interface ExportOptions {
   resolution?: number;         // DPI for images
   template?: string;           // 报告模板名
   outputDir: string;
-  /** 可选：渲染进程提供的画布快照（drawingId -> PNG dataURL），
-   *  用于主进程导出点位图/视野图时替代离屏绘制 */
-  canvasSnapshots?: Record<string, string>;
+  /** 可选：渲染进程提供的画布快照，用于点位图/视野图导出（WYSIWYG 主通道）。
+   *  旧形态 dataURL 字符串仍被接受（exporter 兼容）；新形态附 mmPerPx 换算率，
+   *  导出侧据此在图上合成尺寸标识（比例尺刻度条 + 1:N 比例 + 图幅尺寸）。 */
+  canvasSnapshots?: Record<string, string | CanvasSnapshotMeta>;
+}
+
+/** 画布快照元数据：dataURL + 导出图换算率 */
+export interface CanvasSnapshotMeta {
+  dataUrl: string;
+  /** 导出图 1 物理像素对应的模型毫米数（transform.a / dpr） */
+  mmPerPx: number;
+  /** 快照图像素宽（canvas 物理像素） */
+  widthPx: number;
+  /** 快照图像素高 */
+  heightPx: number;
 }
 
 /**

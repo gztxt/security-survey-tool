@@ -54,6 +54,18 @@ export const useUiStore = defineStore('ui', () => {
     calibrateRequest.value += 1;
   }
 
+  /**
+   * 画布快照刷新请求（递增计数）。
+   * 导出页进入时请求一次：画布快照是导出的唯一视觉真源（WYSIWYG 契约），
+   * 而快照捕获有 800ms 防抖，用户"刚编辑完直接切到导出页"会拿到旧值。
+   * DrawingView watch 该计数并立即补捕（卸载前也会留一份）。
+   */
+  const snapshotRefreshRequest = ref(0);
+
+  function requestSnapshotRefresh() {
+    snapshotRefreshRequest.value += 1;
+  }
+
   function setTool(tool: EditorTool) {
     activeTool.value = tool;
   }
@@ -86,6 +98,8 @@ export const useUiStore = defineStore('ui', () => {
     setSelection,
     calibrateRequest,
     requestCalibrate,
+    snapshotRefreshRequest,
+    requestSnapshotRefresh,
     setTool,
     setSidebarTab,
     replayTour,

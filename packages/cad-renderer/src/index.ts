@@ -177,6 +177,33 @@ export class CadRenderer {
     this.selectedDeviceIds = ids;
   }
 
+  /** 只读访问当前选中/悬停态（快照捕获时临时清空、截完恢复） */
+  getSelectedEntities(): Set<string> {
+    return new Set(this.selectedEntityIds);
+  }
+
+  getSelectedDevices(): Set<string> {
+    return new Set(this.selectedDeviceIds);
+  }
+
+  getHoveredEntity(): string | null {
+    return this.hoveredEntityId;
+  }
+
+  getHoveredDevice(): string | null {
+    return this.hoveredDeviceId;
+  }
+
+  /**
+   * 快照导出用的换算率：导出图 1 物理像素对应多少模型单位（毫米）。
+   * canvas 物理像素 = CSS px × dpr；模型 = transform.a × CSS px
+   * ⇒ 模型/物理像素 = transform.a / dpr。
+   */
+  getMmPerPixel(): number {
+    const a = Math.abs(this.viewport.transform.a) || 1;
+    return a / (this.dpr || 1);
+  }
+
   // ============ 核心渲染循环 ============
 
   render(): RenderStats {

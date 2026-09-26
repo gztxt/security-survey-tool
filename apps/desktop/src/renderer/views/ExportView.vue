@@ -382,10 +382,12 @@ import { Loading, Warning, Document, CircleCheck, CircleClose } from '@element-p
 import { useProjectStore } from '@/stores/project';
 import { useExportStore } from '@/stores/export';
 import { useSettingsStore } from '@/stores/settings';
+import { useUiStore } from '@/stores/ui';
 
 const projectStore = useProjectStore();
 const exportStore = useExportStore();
 const settingsStore = useSettingsStore();
+const uiStore = useUiStore();
 
 // 同步主进程导出进度
 watch(
@@ -602,6 +604,10 @@ onMounted(() => {
     exportConfig.value.types = ['pointmap'];
   }
   previewType.value = exportConfig.value.types[0];
+  // WYSIWYG：导出以画布快照为唯一视觉真源，而快照捕获有 800ms 防抖。
+  // 用户"刚编辑完直接切到导出页"时 store 里可能还是旧快照 —— 进本页
+  // 立刻请求补捕一次（DrawingView 卸载前也会留快照，两者互补）。
+  uiStore.requestSnapshotRefresh();
 });
 
 function getTypeLabel(id: string) {

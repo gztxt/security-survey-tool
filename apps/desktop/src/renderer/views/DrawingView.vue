@@ -244,13 +244,16 @@ function fitViewport() {
 // 让导入链在成功后自动适应视图（AC-1.4 / AC-2.4）
 baselineImport.onFitViewport(() => fitViewport());
 
-/** 捕获当前图纸画布快照存入 store，供主进程导出引擎使用 */
+/** 捕获当前图纸画布快照存入 store，供导出引擎使用。
+ *  新形态带 mmPerPx 换算率（导出侧据此合成比例尺/尺寸标识）；旧调用方
+ *  传纯 dataURL 字符串仍被接受（exporter 兼容两种形态）。 */
 function captureSnapshotToStore() {
   const drawing = activeDrawing.value;
   if (!drawing) return;
-  const dataUrl = viewportRef.value?.captureSnapshot?.();
-  if (dataUrl) {
-    projectStore.setDrawingSnapshot(drawing.id, dataUrl);
+  const snap = viewportRef.value?.captureSnapshot?.();
+  if (snap) {
+    // 兼容旧签名：captureSnapshot 曾直接返回 dataURL 字符串
+    projectStore.setDrawingSnapshot(drawing.id, snap);
   }
 }
 
@@ -376,6 +379,14 @@ let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
 watch([devices, wires], () => {
   if (snapshotTimer) clearTimeout(snapshotTimer);
   snapshotTimer = setTimeout(captureSnapshotToStore, 800);
+});
+
+// 导出页进入时请求补捕快照（WYSIWYG：快照是导出唯一视觉真源，防抖 800ms
+// 不足以覆盖"刚编辑完立刻切导出页"的场景）。ExportView 与本组件同属项目内
+// 路由，切换瞬间本组件尚未卸载，watch 会在卸载前执行完这次补捕。
+watch(() => uiStore.snapshotRefreshRequest, () => {
+  if (snapshotTimer) clearTimeout(snapshotTimer);
+  captureSnapshotToStore();
 });
 
 function onDragOver(e: DragEvent) {

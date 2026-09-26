@@ -8,7 +8,7 @@
 // （preload 暴露的上下文桥）或 `window.webFrame`。
 import type { WebFrame as WebFrameType } from 'electron';
 import { Exporter } from '@security-survey/exporter';
-import type { Project, DeviceModel, ExportOptions, ExportResult, ExportFormat, ExportInclude } from '@security-survey/shared-types';
+import type { Project, DeviceModel, ExportOptions, ExportResult, ExportFormat, ExportInclude, CanvasSnapshotMeta } from '@security-survey/shared-types';
 import { useDeviceLibraryStore } from '@/stores/deviceLibrary';
 import { useProjectStore } from '@/stores/project';
 
@@ -24,7 +24,13 @@ class ExportService {
     // 监听主进程发来的导出请求（通过 preload 暴露的 electronAPI.on）
     const api = getElectronAPI();
     if (api) {
-      api.on('export:request', (_event: any, payload: { requestId: string; channel: string; options: ExportOptions }) => {
+      // 注意签名：preload 的 on() 已经把 IpcRendererEvent 剥掉了
+      //（`const listener = (_event, ...args) => callback(...args)`），
+      // 所以这里回调只收到**一个**实参即 payload。此前写成 (_event, payload)
+      // 时 payload 恒为 undefined，`payload.requestId` 在构造参数时就抛错，
+      // 且抛在 try 之外 ⇒ 既不响应主进程（主进程 120s 超时），又在渲染进程
+      // 留下未捕获异常 —— 点位图导出链路就是断在这里。
+      api.on('export:request', (payload: { requestId: string; channel: string; options: ExportOptions }) => {
         this.handleExportRequest(payload.requestId, payload.channel, payload.options);
       });
     }
@@ -95,8 +101,9 @@ class ExportService {
     }
   }
 
-  private async captureCanvasSnapshots(project: Project): Promise<Record<string, string>> {
-    const snapshots: Record<string, string> = {};
+  private async captureCanvasSnapshots(project: Project): Promise<Record<string, string | CanvasSnapshotMeta>> {
+    // 形态可以是纯 dataURL，也可以是带 mmPerPx 换算率的元数据对象
+    const snapshots: Record<string, string | CanvasSnapshotMeta> = {};
 
     // webFrame 在渲染进程里是 `window.webFrame`（preload 注入或 Electron 自身暴露），
     // 不再 `import from 'electron'` —— 见文件顶部的注释，原因与 vite-plugin-electron-renderer
@@ -129,9 +136,22 @@ class ExportService {
     }
 
     // 也尝试从 project store 的 drawingSnapshots 获取
+    // 注意逐个摊平：store 里的对象是 Vue reactive Proxy，跨 IPC 会被拒绝
+    // （"An object could not be cloned"），这里先还原成纯对象。
     try {
       const projectStore = useProjectStore();
-      Object.assign(snapshots, projectStore.drawingSnapshots);
+      for (const [drawingId, snap] of Object.entries(projectStore.drawingSnapshots || {})) {
+        if (typeof snap === 'string') {
+          snapshots[drawingId] = snap;
+        } else if (snap && typeof snap === 'object') {
+          snapshots[drawingId] = {
+            dataUrl: String(snap.dataUrl ?? ''),
+            mmPerPx: Number(snap.mmPerPx) || 0,
+            widthPx: Number(snap.widthPx) || 0,
+            heightPx: Number(snap.heightPx) || 0,
+          };
+        }
+      }
     } catch {}
 
     return snapshots;

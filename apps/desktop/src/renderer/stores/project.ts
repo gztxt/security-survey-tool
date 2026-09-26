@@ -27,8 +27,18 @@ export const useProjectStore = defineStore('project', () => {
   const saving = ref(false);
   const lastSavedAt = ref<number | null>(null);
   const lastSaveError = ref<string | null>(null);
-  /** 图纸画布快照缓存（drawingId -> dataURL），供主进程导出引擎使用 */
-  const drawingSnapshots = ref<Record<string, string>>({});
+  /**
+   * 图纸画布快照缓存（drawingId -> dataURL 或带换算率的元数据），供导出引擎使用。
+   * 元数据形态含 mmPerPx（导出图 1 像素对应的毫米数）—— 快照剔除了编辑器标尺，
+   * 尺寸标识（比例尺刻度条 + 1:N + 图幅）由导出侧依据它重新合成。
+   */
+  interface SnapshotMeta {
+    dataUrl: string;
+    mmPerPx: number;
+    widthPx: number;
+    heightPx: number;
+  }
+  const drawingSnapshots = ref<Record<string, string | SnapshotMeta>>({});
   /** 打开项目时重水合失败的底图源文件路径（"底图文件已移动"提示用） */
   const basemapMissing = ref<string[]>([]);
   // 计算属性
@@ -95,8 +105,8 @@ export const useProjectStore = defineStore('project', () => {
   );
 
   // 动作
-  function setDrawingSnapshot(drawingId: string, dataUrl: string) {
-    drawingSnapshots.value[drawingId] = dataUrl;
+  function setDrawingSnapshot(drawingId: string, snap: string | { dataUrl: string; mmPerPx: number; widthPx: number; heightPx: number }) {
+    drawingSnapshots.value[drawingId] = snap;
   }
 
 

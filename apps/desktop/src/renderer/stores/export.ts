@@ -3,7 +3,7 @@
 
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { Project } from '@security-survey/shared-types';
+import type { Project, CanvasSnapshotMeta } from '@security-survey/shared-types';
 
 /** 'dxf' = CAD 标注 overlay（T3 新增能力） */
 export type ExportTypeId = 'pointmap' | 'fov' | 'topology' | 'bom' | 'report' | 'dxf';
@@ -72,12 +72,67 @@ export const useExportStore = defineStore('export', () => {
     };
   }
 
+  /**
+   * 把 Vue 响应式代理还原成纯对象 —— 跨 IPC 的硬性前置条件。
+   *
+   * 实测（scripts/smoke/diag-clone.cjs，真实 Electron 进程内对照实验）：
+   *   纯对象           → 正常进入主进程
+   *   reactive Proxy   → "An object could not be cloned."
+   *   JSON round-trip  → 正常进入主进程
+   * 即 Electron 的 IPC 序列化拒绝 Vue 的 Proxy。而 ExportView 与点位图/导出 DXF 等
+   * 通道送出去的 options.project 恰恰就是 store 里的响应式对象，故必须在此除代理。
+   *
+   * structuredClone 读不到 Proxy 的内部代理行为，产出的是纯对象副本；它可能因为
+   * 载荷里存在别的不可克隆值而失败，那时退回 JSON round-trip（更慢但更宽容）。
+   */
+  function toPlain<T>(value: T): T {
+    try {
+      if (typeof structuredClone === 'function') return structuredClone(value);
+    } catch {
+      /* structuredClone 不支持该载荷（含不可克隆值），走 JSON 兜底 */
+    }
+    try {
+      return JSON.parse(JSON.stringify(value ?? null));
+    } catch {
+      return value;
+    }
+  }
+
+  /**
+   * 跨 IPC 前剥离 Vue 响应式代理 —— 「对象 could not be cloned」的直接修复点。
+   *
+   * 快照原本是纯 dataURL **字符串**（原始值，塞进 ref 也不会被代理包装），
+   * 尺寸标识需求把它升级成 { dataUrl, mmPerPx, ... } **对象**后，ref 读取出来
+   * 的每个快照都变成了 Vue 的 reactive Proxy，Electron 的结构化克隆拒绝 Proxy
+   * ⇒ ipcRenderer.invoke 直接抛 "An object could not be cloned"，整张点位图导出失败。
+   *
+   * 这里在 IPC 边界把每个快照摊平成纯对象（只抽原始值），代理不再随载荷出站。
+   */
+  function toPlainSnapshots(
+    snaps?: Record<string, string | CanvasSnapshotMeta> | null
+  ): Record<string, string | CanvasSnapshotMeta> {
+    const out: Record<string, string | CanvasSnapshotMeta> = {};
+    for (const [drawingId, snap] of Object.entries(snaps || {})) {
+      if (typeof snap === 'string') {
+        out[drawingId] = snap;
+      } else if (snap && typeof snap === 'object') {
+        out[drawingId] = {
+          dataUrl: String(snap.dataUrl ?? ''),
+          mmPerPx: Number(snap.mmPerPx) || 0,
+          widthPx: Number(snap.widthPx) || 0,
+          heightPx: Number(snap.heightPx) || 0,
+        };
+      }
+    }
+    return out;
+  }
+
   function baseOptions(opts: {
     project: Project;
     types: ExportTypeId[];
     format: string;
     dpi?: number;
-    canvasSnapshots?: Record<string, string>;
+    canvasSnapshots?: Record<string, string | CanvasSnapshotMeta>;
   }) {
     const drawingIds = (opts.project.drawings || []).map((d) => d.id);
     const formats: string[] = [opts.format];
@@ -85,13 +140,15 @@ export const useExportStore = defineStore('export', () => {
     // `formats.includes('dxf')` 前置条件会把产物静默丢掉（AC-7.3 禁静默缺失）
     if (opts.types.includes('dxf') && !formats.includes('dxf')) formats.push('dxf');
     return {
-      project: opts.project,
+      // project 来自 store（深响应式），必须除代理后才能过 IPC
+      project: toPlain(opts.project),
       drawingIds,
       formats,
       resolution: opts.dpi || 300,
       outputDir: '',
       include: buildInclude(opts.types),
-      canvasSnapshots: opts.canvasSnapshots || {},
+      // 必须剥离响应式：不这么做，对象形态的快照会以 Proxy 出站并被 IPC 拒绝
+      canvasSnapshots: toPlainSnapshots(opts.canvasSnapshots),
     };
   }
 
@@ -106,7 +163,7 @@ export const useExportStore = defineStore('export', () => {
     types: ExportTypeId[];
     format: string;
     dpi?: number;
-    canvasSnapshots?: Record<string, string>;
+    canvasSnapshots?: Record<string, string | CanvasSnapshotMeta>;
     projectName?: string;
   }): Promise<ExportTaskResult> {
     if (exporting.value) {
@@ -129,7 +186,8 @@ export const useExportStore = defineStore('export', () => {
         label: '导出 DXF',
         call: async () => {
           const res: any = await window.api.export.dxf({
-            project: opts.project,
+            // 同 baseOptions：project 是响应式对象，必须除代理后再过 IPC
+            project: toPlain(opts.project),
             drawingIds: (opts.project.drawings || []).map((d) => d.id),
             dxfLayers: (opts as any).dxfLayers || { devices: true, cables: true, trays: true, wells: true, texts: true },
             autoSave: false,
@@ -225,7 +283,8 @@ export const useExportStore = defineStore('export', () => {
     const files: ExportTaskFile[] = [];
     try {
       const res: any = await window.api.export.dxf({
-        project: opts.project,
+        // DXF 走的是主进程直调，同样要过 IPC ⇒ 同样必须除响应式代理
+        project: toPlain(opts.project),
         drawingIds: opts.drawingIds?.length
           ? opts.drawingIds
           : (opts.project.drawings || []).map(d => d.id),

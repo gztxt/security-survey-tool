@@ -1596,10 +1596,60 @@ watch(() => viewport.value, () => {
 defineExpose({
   /** 获取主画布元素（用于导出快照） */
   getMainCanvas: () => mainCanvas.value,
-  /** 捕获当前画布快照 dataURL（PNG） */
-  captureSnapshot: (): string | null => {
+  /**
+   * 捕获当前画布快照 —— 导出（点位图/视野图/PDF）的唯一视觉真源。
+   *
+   * WYSIWYG 语义：导出"编辑后保存的状态"，但**剔除编辑器自身装饰** ——
+   * 网格、标尺、选中/悬停高亮框是交互辅助，不是图纸内容，出现在导出文件里
+   * 就是"删不掉的元素"（问题 2 的实际形态）。实现：给渲染器塞一份关掉装饰
+   * 的视口副本 → 重画一帧 → 截取 → 恢复。全程不动组件的 viewport ref
+   * （替换它会触发 deep watcher 写回 drawing.viewport + markDirty，把
+   * "截快照"变成"改项目"）；同步块内 60fps 渲染循环无法插入，用户不会
+   * 看到无网格的中间帧。
+   *
+   * 返回含 mmPerPx（导出图 1 像素 = 多少毫米）的元数据，供导出侧合成
+   * 尺寸标识（比例尺刻度条 + 1:N 比例 + 图幅尺寸）—— 快照本身剔了标尺，
+   * 尺寸信息必须由这张卡完整补回来，否则导出图不可量测。
+   */
+  captureSnapshot: (): { dataUrl: string; mmPerPx: number; widthPx: number; heightPx: number } | null => {
     try {
-      return mainCanvas.value ? mainCanvas.value.toDataURL('image/png') : null;
+      if (!mainCanvas.value || !renderer.value) return null;
+
+      const r = renderer.value;
+      const vp = viewport.value;
+      const prevSelEnt = r.getSelectedEntities();
+      const prevSelDev = r.getSelectedDevices();
+      const prevHoverEnt = r.getHoveredEntity();
+      const prevHoverDev = r.getHoveredDevice();
+
+      try {
+        r.setViewport({ ...vp, showGrid: false, showRuler: false });
+        r.setHoveredEntity(null);
+        r.setHoveredDevice(null);
+        r.setSelectedEntities(new Set());
+        r.setSelectedDevices(new Set());
+        r.render();
+        const dataUrl = mainCanvas.value.toDataURL('image/png');
+        if (!dataUrl) return null;
+        // 换算率取不到时降级为 0（除数保护：NaN 会让下游误判为"有换算率"）：
+        // 只让导出图缺一笔比例尺，绝不因此丢掉整张快照 —— 比例尺可由 exporter
+        // 侧按 mmPerPx<=0 自动省略（"宁缺一笔比例尺，也不整张导出图作废"）。
+        const rawScale = typeof r.getMmPerPixel === 'function' ? Number(r.getMmPerPixel()) : NaN;
+        const mmPerPx = Number.isFinite(rawScale) && rawScale > 0 ? rawScale : 0;
+        return {
+          dataUrl,
+          mmPerPx,
+          widthPx: mainCanvas.value.width,
+          heightPx: mainCanvas.value.height,
+        };
+      } finally {
+        r.setViewport(vp);
+        r.setSelectedEntities(prevSelEnt);
+        r.setSelectedDevices(prevSelDev);
+        r.setHoveredEntity(prevHoverEnt);
+        r.setHoveredDevice(prevHoverDev);
+        r.render();
+      }
     } catch {
       return null;
     }

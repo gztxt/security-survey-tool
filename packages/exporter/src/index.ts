@@ -19,6 +19,7 @@ import {
   Point2D,
   BBox,
   ViewportState,
+  CanvasSnapshotMeta,
 } from '@security-survey/shared-types';
 import { metersToModelUnits } from '@security-survey/shared-types';
 
@@ -227,8 +228,8 @@ export class Exporter {
   private project: Project;
   private drawings: Map<string, Drawing> = new Map();
   private deviceModels: Map<string, DeviceModel> = new Map();
-  /** 渲染进程提供的画布快照 dataURL（drawingId -> data:image/png;base64,...） */
-  private snapshots: Record<string, string> = {};
+  /** 渲染进程提供的画布快照（drawingId -> dataURL 或带换算率的元数据对象） */
+  private snapshots: Record<string, string | CanvasSnapshotMeta> = {};
   /** 位图底图缓存（imagePath -> HTMLImageElement），DOM 导出路径重绘 IMAGE 图元前预加载 */
   private imageCache: Map<string, HTMLImageElement> = new Map();
 
@@ -507,23 +508,41 @@ export class Exporter {
     const scale = (dpi || EXPORT_DPI) / 72; // 72 DPI 基准
     const bounds = this.calculateDrawingBounds(drawing);
 
-    // 无 DOM 环境（主进程）时优先使用渲染进程提供的画布快照
+    // WYSIWYG 契约：只要渲染进程提供了画布快照（编辑视图所见），点位图就
+    // 直接以快照为准 —— 无论本进程有没有 DOM。旧逻辑只在主进程（无 DOM）
+    // 用快照，渲染进程自己反而走离屏重绘，产出的图与编辑器所见完全两回事
+    // （空白 PNG / 多出删不掉的装饰）。快照缺失才落到下面的离屏重绘兜底。
     const snapshot = this.snapshots[drawing.id];
+    if (snapshot) {
+      const filename = `${this.sanitizeFilename(this.project.name)}_${this.sanitizeFilename(drawing.name)}_点位图.${format}`;
+      return this.exportFromSnapshot(snapshot, filename, format, drawing.id, drawing);
+    }
     if (!hasDom()) {
-      if (!snapshot) {
-        throw new Error('点位图导出需要画布环境：请在渲染进程导出，或通过 canvasSnapshots 提供画布快照');
-      }
-      return this.exportFromSnapshot(snapshot, `${drawing.id}_pointmap.${format}`, format, drawing.id);
+      throw new Error('点位图导出需要画布环境：请先在图纸编辑页打开图纸，或通过 canvasSnapshots 提供画布快照');
     }
 
-    // 创建离屏 Canvas
+    // 兜底：离屏重绘（快照不可用时的降级路径，需自证不产出空白/超限画布）
+    // 图纸坐标是毫米量级（一张图数十万 mm）：bounds×scale 直建画布会超
+    // Chromium 单 canvas 像素上限，分配失败后一切绘制静默 no-op ⇒ 空白 PNG。
+    // 此处把目标画布钳到安全上限内，等比缩小 scale（清晰度换可用性）。
+    const MAX_CANVAS_PIXELS = 32 * 1024 * 1024; // 约 4096×8192，主流平台均安全
+    let effScale = scale;
+    if (bounds.width * effScale * bounds.height * effScale > MAX_CANVAS_PIXELS) {
+      effScale = Math.sqrt(MAX_CANVAS_PIXELS / (bounds.width * bounds.height));
+    }
+
     const canvas = document.createElement('canvas');
-    canvas.width = bounds.width * scale;
-    canvas.height = bounds.height * scale;
+    canvas.width = Math.max(1, Math.round(bounds.width * effScale));
+    canvas.height = Math.max(1, Math.round(bounds.height * effScale));
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    ctx.scale(scale, scale);
+    // 先垫白底：旧代码从不填底色，透明底上再画白色 CAD 线条，
+    // PNG 查看器里就是"一片空白"（问题 1 的第二根因）
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.scale(effScale, effScale);
     ctx.translate(-bounds.minX, -bounds.minY);
 
     // 0) 预加载位图底图（IMAGE 图元），保证重绘时同步可用
@@ -541,16 +560,16 @@ export class Exporter {
     // 4) 绘制弱电井
     this.drawWeakPoints(ctx, drawing.wiring?.weakPoints || []);
 
-    // 5) 绘制设备
-    this.drawDevices(ctx, drawing.devices || []);
+    // 5) 绘制设备（图标随图幅等比，避免几十万 mm 画布上的亚像素小点）
+    this.drawDevices(ctx, drawing.devices || [], bounds);
 
-    // 6) 绘制图例/标尺/比例尺
-    this.drawLegend(ctx, drawing);
+    // 6) 比例尺（图例桩已删：悬空"图例"两字既无内容也不在编辑画布上，
+    // 属于用户删不掉的导出装饰，违反 WYSIWYG 契约）
     this.drawScaleBar(ctx, drawing, bounds);
 
-    // 输出
-    const filename = `${this.sanitizeFilename(this.project.name)}_${drawing.name}_点位图.${format}`;
-    const outputPath = `${drawing.id}_pointmap.${format}`;
+    // 输出（path 即保存对话框 defaultPath，用人话命名）
+    const filename = `${this.sanitizeFilename(this.project.name)}_${this.sanitizeFilename(drawing.name)}_点位图.${format}`;
+    const outputPath = filename;
 
     if (format === 'pdf') {
       return this.canvasToPdf(canvas, outputPath, filename, bounds);
@@ -717,18 +736,23 @@ export class Exporter {
     }
   }
 
-  private drawDevices(ctx: CanvasRenderingContext2D, devices: DeviceInstance[]): void {
+  private drawDevices(ctx: CanvasRenderingContext2D, devices: DeviceInstance[], bounds?: BBox): void {
+    // 图标尺寸：默认 20 模型单位是屏幕坐标系下的约定；兜底重绘路径的世界
+    // 坐标是毫米（一张图数十万 mm），固定 20 会画成不可见的亚像素点。
+    // 有 bounds 时按"图幅对角线的 1%"取值，视觉密度接近编辑器所见。
+    const fallbackSize = bounds ? Math.max(20, Math.hypot(bounds.width, bounds.height) * 0.01) : 20;
     for (const device of devices) {
       const model = this.deviceModels.get(device.modelId);
-      const size = 20;
+      const size = fallbackSize;
       ctx.save();
       ctx.translate(device.position.x, device.position.y);
       ctx.rotate(device.rotation);
 
-      // 设备图标
+      // 设备图标（线宽/字号按图标尺寸等比：毫米坐标系里固定 1.5px 不可见）
+      const u = size / 20; // 图标基准 20 时的比例因子
       ctx.fillStyle = '#3B82F6';
       ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 * u;
       ctx.beginPath();
       ctx.arc(0, 0, size / 2, 0, Math.PI * 2);
       ctx.fill();
@@ -745,24 +769,15 @@ export class Exporter {
 
       // 标签
       if (device.label) {
-        ctx.font = '10px sans-serif';
+        ctx.font = `${10 * u}px sans-serif`;
         ctx.fillStyle = '#1F2937';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillText(device.label, 0, size / 2 + 4);
+        ctx.fillText(device.label, 0, size / 2 + 4 * u);
       }
 
       ctx.restore();
     }
-  }
-
-  private drawLegend(ctx: CanvasRenderingContext2D, drawing: Drawing): void {
-    // 简化：右下角绘制图例
-    const x = 20, y = 20;
-    ctx.font = '10px sans-serif';
-    ctx.fillStyle = '#1F2937';
-    ctx.textAlign = 'left';
-    ctx.fillText('图例', x, y);
   }
 
   private drawScaleBar(ctx: CanvasRenderingContext2D, drawing: Drawing, bounds: BBox): void {
@@ -771,17 +786,21 @@ export class Exporter {
     const barLengthM = 10; // 10米比例尺
     const barLengthPx = metersToModelUnits(barLengthM, scale);
 
+    // 线宽/字号/边距按图幅缩放（毫米坐标系里固定 2px 是亚像素级，不可见）
+    const u = Math.max(1, Math.hypot(bounds.width, bounds.height) * 0.005);
+
     ctx.strokeStyle = '#000';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = u;
     ctx.beginPath();
-    ctx.moveTo(bounds.minX + 20, bounds.maxY - 20);
-    ctx.lineTo(bounds.minX + 20 + barLengthPx, bounds.maxY - 20);
+    ctx.moveTo(bounds.minX + 4 * u, bounds.maxY - 4 * u);
+    ctx.lineTo(bounds.minX + 4 * u + barLengthPx, bounds.maxY - 4 * u);
     ctx.stroke();
 
-    ctx.font = '10px sans-serif';
+    ctx.font = `${2.5 * u}px sans-serif`;
     ctx.fillStyle = '#000';
     ctx.textAlign = 'center';
-    ctx.fillText(`${barLengthM}m`, bounds.minX + 20 + barLengthPx / 2, bounds.maxY - 25);
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`${barLengthM}m`, bounds.minX + 4 * u + barLengthPx / 2, bounds.maxY - 5 * u);
   }
 
   // ============ 2. 视野覆盖图 ============
@@ -795,22 +814,33 @@ export class Exporter {
     const scale = (dpi || EXPORT_DPI) / 72;
     const bounds = this.calculateDrawingBounds(drawing);
 
-    // 无 DOM 环境（主进程）时优先使用渲染进程提供的画布快照
+    // WYSIWYG 契约：同点位图 —— 有快照就用快照（编辑器所见即导出所得）
     const snapshot = this.snapshots[drawing.id];
+    if (snapshot) {
+      const filename = `${this.sanitizeFilename(this.project.name)}_${this.sanitizeFilename(drawing.name)}_视野图.${format}`;
+      return this.exportFromSnapshot(snapshot, filename, format, drawing.id, drawing);
+    }
     if (!hasDom()) {
-      if (!snapshot) {
-        throw new Error('视野图导出需要画布环境：请在渲染进程导出，或通过 canvasSnapshots 提供画布快照');
-      }
-      return this.exportFromSnapshot(snapshot, `${drawing.id}_fovmap.${format}`, format, drawing.id);
+      throw new Error('视野图导出需要画布环境：请先在图纸编辑页打开图纸，或通过 canvasSnapshots 提供画布快照');
+    }
+
+    // 兜底：离屏重绘（与点位图兜底同规则：钳制画布尺寸 + 白底 + 图标随图幅）
+    const MAX_CANVAS_PIXELS = 32 * 1024 * 1024;
+    let effScale = scale;
+    if (bounds.width * effScale * bounds.height * effScale > MAX_CANVAS_PIXELS) {
+      effScale = Math.sqrt(MAX_CANVAS_PIXELS / (bounds.width * bounds.height));
     }
 
     const canvas = document.createElement('canvas');
-    canvas.width = bounds.width * scale;
-    canvas.height = bounds.height * scale;
+    canvas.width = Math.max(1, Math.round(bounds.width * effScale));
+    canvas.height = Math.max(1, Math.round(bounds.height * effScale));
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    ctx.scale(scale, scale);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.scale(effScale, effScale);
     ctx.translate(-bounds.minX, -bounds.minY);
 
     // 0) 预加载位图底图（IMAGE 图元），保证淡化重绘时同步可用
@@ -832,7 +862,7 @@ export class Exporter {
       // 主视野
       ctx.fillStyle = 'rgba(34, 197, 94, 0.15)';
       ctx.strokeStyle = '#22C55E';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 / effScale;
       ctx.beginPath();
       ctx.moveTo(polygon[0].x, polygon[0].y);
       for (let i = 1; i < polygon.length; i++) {
@@ -847,13 +877,13 @@ export class Exporter {
     }
 
     // 设备图标（不透明）
-    this.drawDevices(ctx, drawing.devices || []);
+    this.drawDevices(ctx, drawing.devices || [], bounds);
 
     // 图例：视野/盲区
     this.drawFovLegend(ctx, drawing);
 
-    const filename = `${this.sanitizeFilename(this.project.name)}_${drawing.name}_视野图.${format}`;
-    const outputPath = `${drawing.id}_fovmap.${format}`;
+    const filename = `${this.sanitizeFilename(this.project.name)}_${this.sanitizeFilename(drawing.name)}_视野图.${format}`;
+    const outputPath = filename;
 
     if (format === 'pdf') {
       return this.canvasToPdf(canvas, outputPath, filename, bounds);
@@ -1142,19 +1172,56 @@ export class Exporter {
   }
 
   /**
-   * 从渲染进程提供的画布快照（dataURL）导出，用于无 DOM 的主进程环境
+   * 从渲染进程提供的画布快照导出 —— WYSIWYG 主通道。
+   *
+   * 快照来自编辑视图的画布（已剔除网格/标尺/高亮等编辑器装饰）。
+   * 尺寸信息由本方法在图上合成「尺寸标识卡」补回：比例尺刻度条 + 1:N 比例 +
+   * 图幅实际尺寸 —— 快照剔了标尺之后，导出图若无任何量测锚点则不可用
+   * （用户要求：导出必须完整保留尺寸标识）。
+   *
+   * dataUrl 兼容旧形态（纯字符串）；元数据形态（mmPerPx）用于换算比例尺。
+   * 合成步骤需 DOM；无 DOM（主进程）时保留原快照输出（比例尺缺位是已知
+   * 限制，渲染进程路径才是主通道）。
    */
   private async exportFromSnapshot(
-    dataUrl: string,
+    snap: string | CanvasSnapshotMeta,
     outputPath: string,
     format: ExportFormat,
-    drawingId: string
+    drawingId: string,
+    drawing?: Drawing
   ): Promise<ExportFile> {
-    const b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+    const meta: CanvasSnapshotMeta | null = typeof snap === 'string'
+      ? null
+      : (snap && Number.isFinite(snap.mmPerPx) && snap.mmPerPx > 0 ? snap : null);
+    const dataUrl = typeof snap === 'string' ? snap : snap.dataUrl;
+    let b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+
+    // 有 DOM ⇒ 合成白底 + 尺寸标识卡（所有位图格式统一处理，含 PNG：
+    // 标识卡必须出现在每一种导出产物上）
+    if (hasDom()) {
+      const composited = await this.compositeWithScaleBar(dataUrl, format, meta, drawing);
+      if (composited) b64 = composited;
+    }
+
     const pngBytes = base64ToBytes(b64);
 
     if (format === 'png') {
       return { path: outputPath, format: 'png', size: pngBytes.length, drawingId, dataBase64: b64 };
+    }
+
+    if (format === 'jpg') {
+      // 有 DOM 时上面已重编码为 JPG（白底 + 尺寸卡）；无 DOM 降级 PNG 输出
+      if (hasDom()) {
+        const bytes = base64ToBytes(b64);
+        return { path: outputPath.replace(/\.[^.]+$/, '.jpg'), format: 'jpg', size: bytes.length, drawingId, dataBase64: b64 };
+      }
+      return {
+        path: outputPath.replace(/\.[^.]+$/, '.png'),
+        format: 'png',
+        size: pngBytes.length,
+        drawingId,
+        dataBase64: b64,
+      };
     }
 
     if (format === 'pdf') {
@@ -1173,7 +1240,7 @@ export class Exporter {
       };
     }
 
-    // 快照为 PNG，无 canvas 无法重编码为 JPG，降级为 PNG 输出
+    // 其他格式（jpg 无 DOM 已在上面处理；此处防御性兜底）
     return {
       path: outputPath.replace(/\.[^.]+$/, '.png'),
       format: 'png',
@@ -1181,6 +1248,123 @@ export class Exporter {
       drawingId,
       dataBase64: b64,
     };
+  }
+
+  /**
+   * 快照合成：白底 + 右下角尺寸标识卡（比例尺刻度条 + 1:N + 图幅尺寸）。
+   * 失败返回 null（调用方保留原快照，导出不断链）。
+   */
+  private async compositeWithScaleBar(
+    dataUrl: string,
+    format: ExportFormat,
+    meta: CanvasSnapshotMeta | null,
+    drawing?: Drawing
+  ): Promise<string | null> {
+    try {
+      const img = await this.loadImage(dataUrl);
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      this.drawScaleBadge(ctx, canvas, meta, drawing);
+      if (format === 'jpg') {
+        return canvas.toDataURL('image/jpeg', 0.92).split(',')[1] || null;
+      }
+      return canvas.toDataURL('image/png').split(',')[1] || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 尺寸标识卡：导出图右下角的白底小卡，完整承载尺寸信息（用户要求：
+   * 导出必须完整保留尺寸标识）。三要素：
+   *  1. 比例尺刻度条 —— 黑白相间分段，标注实际长度（自动取 1/2/5 系列）
+   *  2. 1:N 比例数字 —— 来自图纸校准（未校准时显示"未校准"并省略刻度条）
+   *  3. 图幅实际尺寸 —— 导出图覆盖的实际宽×高（米）
+   * 无 mmPerPx（旧快照形态）时只画第 2/3 项中可算的 1:N。
+   */
+  private drawScaleBadge(
+    ctx: CanvasRenderingContext2D,
+    canvas: HTMLCanvasElement,
+    meta: CanvasSnapshotMeta | null,
+    drawing?: Drawing
+  ): void {
+    const mmPerPx = meta?.mmPerPx;
+    const cal = drawing?.calibration;
+    const scaleRatio = cal?.isCalibrated && cal.scale > 0 ? 1 / cal.scale : null;
+
+    // 尺寸随图幅缩放，但限上下限：小图不至于贴边、大图不至于占角
+    const u = Math.max(10, Math.min(22, Math.round(Math.min(canvas.width, canvas.height) / 40)));
+    const pad = u;
+    const cardW = u * 18;
+    const cardH = u * 4.6;
+    const x0 = canvas.width - cardW - pad;
+    const y0 = canvas.height - cardH - pad;
+
+    // 卡片底：白底 + 描边 + 轻投影（任何画布底色上都可读）
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+    ctx.strokeStyle = '#374151';
+    ctx.lineWidth = Math.max(1, u / 14);
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
+    ctx.shadowBlur = u * 0.3;
+    ctx.beginPath();
+    ctx.roundRect(x0, y0, cardW, cardH, u * 0.35);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // 文本样式
+    ctx.fillStyle = '#111827';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.font = `${Math.round(u * 0.85)}px sans-serif`;
+
+    // 行 1：1:N 比例 + 图幅实际尺寸
+    const spanW = meta ? (mmPerPx! * canvas.width) / 1000 : null;   // 米
+    const spanH = meta ? (mmPerPx! * canvas.height) / 1000 : null;  // 米
+    const fmtM = (m: number) => (m >= 10 ? m.toFixed(0) : m >= 1 ? m.toFixed(1) : m.toFixed(2));
+    const line1 = scaleRatio
+      ? `比例 1:${Math.round(scaleRatio)}`
+      : '比例：未校准';
+    const line2 = spanW !== null && spanH !== null ? `图幅 ${fmtM(spanW)}m × ${fmtM(spanH)}m` : '';
+    ctx.fillText(line1, x0 + u * 1.1, y0 + u * 1.1);
+    if (line2) {
+      ctx.fillText(line2, x0 + u * 1.1, y0 + u * 2.2);
+    }
+
+    // 行 3：比例尺刻度条（黑白相间 4 段，长度按 1/2/5 取整到"整数米"）
+    if (mmPerPx && scaleRatio) {
+      // 目标像素长度约卡宽的 60%，折算实际米数后向上取到 1/2/5 系列整数
+      const targetPx = cardW * 0.62;
+      const rawM = (mmPerPx * targetPx) / 1000;
+      const pow = Math.pow(10, Math.floor(Math.log10(rawM)));
+      const candidates = [pow, 2 * pow, 5 * pow, 10 * pow];
+      const barM = candidates.find(v => v >= rawM) ?? 10 * pow;
+      const barPx = (barM * 1000) / mmPerPx;
+
+      const bx = x0 + u * 1.1;
+      const by = y0 + cardH - u * 1.5;
+      const bh = u * 0.6;
+      const seg = barPx / 4;
+      for (let i = 0; i < 4; i++) {
+        ctx.fillStyle = i % 2 === 0 ? '#111827' : '#FFFFFF';
+        ctx.fillRect(bx + i * seg, by, seg, bh);
+      }
+      ctx.strokeStyle = '#111827';
+      ctx.lineWidth = Math.max(1, u / 16);
+      ctx.strokeRect(bx, by, barPx, bh);
+
+      ctx.fillStyle = '#111827';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(`${barM}m`, bx + barPx, by - u * 0.15);
+    }
   }
 
   // ============ 4. 设备清单 ============
