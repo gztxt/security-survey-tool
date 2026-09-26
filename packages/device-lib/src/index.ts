@@ -7,6 +7,7 @@ import {
   DeviceSpecs,
   DeviceCategory,
   DeviceType,
+  CableType,
   Point2D,
   FieldOfView,
 } from '@security-survey/shared-types';
@@ -628,6 +629,77 @@ export const BUILTIN_DEVICES: DeviceModel[] = [
     updatedAt: Date.now(),
   },
 
+  // === 无线 AP ===
+  // 勘点场景常见"AP 覆盖"需求（走廊/大堂/室外），此前设备库完全没有 AP 品类，
+  // 左侧面板翻遍也只有摄像头/交换机/机柜，AP 只能拿"其他"凑数。
+  {
+    id: 'generic-ap-ceiling-wifi6',
+    name: '吸顶式无线AP Wi-Fi6',
+    vendor: 'Generic',
+    category: 'ap',
+    type: 'ap_ceiling',
+    specs: {
+      powerConsumption: 12,
+      voltage: 'PoE',
+      mountHeight: 3,
+      dimensions: { w: 180, h: 180, d: 40 },
+      weight: 450,
+      wifi: true,
+      resolution: 'Wi-Fi6 3000Mbps',
+    },
+    icon: { type: 'builtin', path: 'ap-ceiling', width: 24, height: 24, anchor: { x: 0.5, y: 0.5 }, rotationOffset: 0 },
+    price: 480,
+    description: '走廊/大堂吸顶部署，PoE 供电，单台覆盖半径约 12m',
+    tags: ['ap', 'wifi', 'wifi6', '无线ap', '吸顶'],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  },
+  {
+    id: 'generic-ap-wall-wifi6',
+    name: '面板式无线AP Wi-Fi6（86盒）',
+    vendor: 'Generic',
+    category: 'ap',
+    type: 'ap_wall',
+    specs: {
+      powerConsumption: 8,
+      voltage: 'PoE',
+      mountHeight: 1.4,
+      dimensions: { w: 86, h: 86, d: 40 },
+      weight: 200,
+      wifi: true,
+      resolution: 'Wi-Fi6 1800Mbps',
+    },
+    icon: { type: 'builtin', path: 'ap-wall', width: 24, height: 24, anchor: { x: 0.5, y: 0.5 }, rotationOffset: 0 },
+    price: 320,
+    description: '客房/办公室面板式部署，替换 86 型底盒，单间一台',
+    tags: ['ap', 'wifi', 'wifi6', '无线ap', '面板'],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  },
+  {
+    id: 'generic-ap-outdoor-wifi6',
+    name: '室外无线AP Wi-Fi6（IP67）',
+    vendor: 'Generic',
+    category: 'ap',
+    type: 'ap_outdoor',
+    specs: {
+      powerConsumption: 15,
+      voltage: 'PoE',
+      mountHeight: 4,
+      dimensions: { w: 240, h: 240, d: 70 },
+      weight: 900,
+      ipRating: 'IP67',
+      wifi: true,
+      resolution: 'Wi-Fi6 3000Mbps',
+    },
+    icon: { type: 'builtin', path: 'ap-outdoor', width: 24, height: 24, anchor: { x: 0.5, y: 0.5 }, rotationOffset: 0 },
+    price: 980,
+    description: '园区/屋面/停车场室外覆盖，防雨防尘，覆盖半径约 30m',
+    tags: ['ap', 'wifi', 'wifi6', '无线ap', '室外'],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  },
+
   // === 通用/其他 ===
   {
     id: 'generic-dome-2mp',
@@ -691,6 +763,88 @@ export const BUILTIN_DEVICES: DeviceModel[] = [
 
 // ============ 设备库管理类 ============
 
+/**
+ * 布线材料表 —— 左侧面板「布线材料」区的数据源。
+ * 历史缺陷：面板里只有设备，网线/光纤只能走工具栏"布线"按钮且线缆类型
+ * 被硬编码成 cat6，图纸上根本选不了线种。材料表与 canvas 的
+ * application/cable 拖放协议配套，拖一种线到画布即进入布线并锁定线种。
+ */
+export interface CableMaterial {
+  id: CableType;
+  name: string;
+  category: 'copper' | 'fiber' | 'power';
+  /** 画布上的显示色（与渲染器线缆取色一致） */
+  color: string;
+  /** 参考单价（元/米），用于材料表/报价 */
+  unitPrice: number;
+  /** 单段建议最大长度（米）：网线 100m 是 PoE 与以太网的硬约束 */
+  maxRun: number;
+  description: string;
+}
+
+export const BUILTIN_CABLE_MATERIALS: CableMaterial[] = [
+  {
+    id: 'cat6',
+    name: '六类网线 CAT6',
+    category: 'copper',
+    color: '#3b82f6',
+    unitPrice: 3.5,
+    maxRun: 100,
+    description: '千兆到桌面，PoE 供电首选；单段不超过 100m',
+  },
+  {
+    id: 'cat6a',
+    name: '超六类网线 CAT6A',
+    category: 'copper',
+    color: '#0ea5e9',
+    unitPrice: 6,
+    maxRun: 100,
+    description: '万兆短距，主干/高带宽点位（4K 多路上联）',
+  },
+  {
+    id: 'cat7',
+    name: '七类网线 CAT7',
+    category: 'copper',
+    color: '#8b5cf6',
+    unitPrice: 9,
+    maxRun: 100,
+    description: '双层屏蔽，强电/机房等强干扰环境',
+  },
+  {
+    id: 'fiber_sm',
+    name: '单模光纤',
+    category: 'fiber',
+    color: '#f59e0b',
+    unitPrice: 4,
+    maxRun: 2000,
+    description: '楼间/园区主干，千米级传输，需配对光模块',
+  },
+  {
+    id: 'fiber_mm',
+    name: '多模光纤',
+    category: 'fiber',
+    color: '#eab308',
+    unitPrice: 5,
+    maxRun: 550,
+    description: '楼内竖井主干，≤550m（OM4）',
+  },
+  {
+    id: 'power',
+    name: '电源线 RVV 2×1.0',
+    category: 'power',
+    color: '#ef4444',
+    unitPrice: 2.5,
+    maxRun: 200,
+    description: '220V 取电点布线，非 PoE 设备（球机/补光灯）供电',
+  },
+];
+
+/** 按 CableType 取材料定义；未知线种返回 undefined（调用方自行兜底） */
+export function getCableMaterial(type: CableType): CableMaterial | undefined {
+  return BUILTIN_CABLE_MATERIALS.find(m => m.id === type);
+}
+
+// ============ 设备库管理类 ============
 export class DeviceLibrary {
   private devices: Map<string, DeviceModel> = new Map();
   private categories: Map<DeviceCategory, DeviceModel[]> = new Map();

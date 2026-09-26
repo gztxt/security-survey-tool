@@ -35,6 +35,31 @@
     </div>
 
     <div class="panel-body">
+      <!-- 布线材料：网线/光纤/电源线。拖到画布 → 进入布线并锁定线种；
+           历史缺陷：面板里只有设备，线缆只能走工具栏且类型被硬编码 cat6。 -->
+      <div class="material-section">
+        <div class="section-head">
+          <span class="section-title">布线材料</span>
+          <span class="section-hint">拖到画布 / 点击 → 布线</span>
+        </div>
+        <div class="material-list">
+          <div
+            v-for="m in cableMaterials"
+            :key="m.id"
+            class="material-item"
+            :class="{ active: uiStore.activeCableType === m.id }"
+            :title="`${m.description}（单段≤${m.maxRun}m）`"
+            draggable="true"
+            @dragstart="onCableDragStart(m, $event)"
+            @click="startWiring(m.id)"
+          >
+            <span class="material-swatch" :style="{ background: m.color }"></span>
+            <span class="material-name">{{ m.name }}</span>
+            <span class="material-price">¥{{ m.unitPrice }}/m</span>
+          </div>
+        </div>
+      </div>
+
       <!-- 分类标签 -->
       <div class="category-tabs" role="tablist">
         <button
@@ -160,13 +185,15 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
 import { useDeviceLibraryStore } from '@/stores/deviceLibrary';
-import { BUILTIN_DEVICES } from '@security-survey/device-lib';
+import { useUiStore } from '@/stores/ui';
+import { BUILTIN_DEVICES, BUILTIN_CABLE_MATERIALS } from '@security-survey/device-lib';
 import DeviceIcon from './DeviceIcon.vue';
 import Dialog from '@/components/common/Dialog.vue';
 import DeviceForm from './DeviceForm.vue';
 import { useVisibility } from '@/composables/useVisibility';
 
 const store = useDeviceLibraryStore();
+const uiStore = useUiStore();
 const { advancedMode, isCommonDevice } = useVisibility();
 
 const props = defineProps<{
@@ -177,7 +204,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   'device-selected': [deviceId: string];
   'placement-start': [deviceId: string];
+  'cable-selected': [cableType: string];
 }>();
+
+/** 左侧「布线材料」区数据源（网线/光纤/电源线） */
+const cableMaterials = BUILTIN_CABLE_MATERIALS;
 
 const searchQuery = ref('');
 const selectedCategory = ref<'all' | any>('all');
@@ -244,7 +275,7 @@ const categoryIconMap: Record<string, string> = {
   all: '📦',
   dome: '📷', bullet: '🎯', ptz: '🔄', panoramic: '🌐', thermal: '🌡️',
   multi: '👁️', fisheye: '🔮', door_station: '🚪', nvr: '💾', switch: '🔀',
-  rack: '🗄️', other: '🔧',
+  rack: '🗄️', ap: '📶', other: '🔧',
   camera: '📷', access_control: '🚪', alarm: '🚨', intercom: '📞',
   patrol: '🚓', storage: '💾', network: '🌐', display: '🖥️', power: '🔌', sensor: '📡',
 };
@@ -252,7 +283,7 @@ const categoryLabelMap: Record<string, string> = {
   all: '全部',
   dome: '半球机', bullet: '枪机', ptz: '球机', panoramic: '全景', thermal: '热成像',
   multi: '多目', fisheye: '鱼眼', door_station: '门口机', nvr: '录像机', switch: '交换机',
-  rack: '机柜', other: '其他',
+  rack: '机柜', ap: '无线AP', other: '其他',
   camera: '摄像机', access_control: '门禁', alarm: '报警', intercom: '对讲',
   patrol: '巡更', storage: '存储', network: '网络', display: '显示', power: '电源', sensor: '传感',
 };
@@ -276,6 +307,18 @@ function startPlacement(deviceId: string) {
 function onDragStart(device: any, event: DragEvent) {
   // 拖拽数据
   event.dataTransfer?.setData('application/device', JSON.stringify(device));
+}
+
+/** 布线材料拖拽：画布收到后切到布线工具并锁定线种 */
+function onCableDragStart(material: { id: string }, event: DragEvent) {
+  event.dataTransfer?.setData('application/cable', material.id);
+  uiStore.setCableType(material.id as any);
+}
+
+/** 点击材料 = 与拖拽同一语义：选线种 + 进布线，省一次拖拽 */
+function startWiring(cableId: string) {
+  uiStore.startWiring(cableId as any);
+  emit('cable-selected', cableId);
 }
 
 function showContextMenu(device: any, event: MouseEvent) {
@@ -415,6 +458,79 @@ watch(selectedCategory, (v) => { store.selectCategory(v); });
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+}
+
+.material-section {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.section-hint {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.material-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.material-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: grab;
+  transition: all 0.15s;
+}
+
+.material-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.material-item.active {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: #3b82f6;
+}
+
+.material-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.material-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.material-price {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
 }
 
 .category-tabs {

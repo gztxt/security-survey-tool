@@ -2,6 +2,7 @@
 // 设计约束：只承载"当前交互选择"（工具 / 侧栏 Tab / 引导回放），不承载任何业务数据。
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
+import type { CableType } from '@security-survey/shared-types';
 
 export type EditorTool = 'select' | 'pan' | 'device' | 'wire' | 'tray' | 'well' | 'zoom';
 
@@ -12,6 +13,15 @@ export const useUiStore = defineStore('ui', () => {
   const activeSidebarTab = ref('devices');
   /** 新手引导回放开关（默认关闭；AdvancedMenu「其他」组触发） */
   const showTour = ref(false);
+  /**
+   * 当前布线线种（网线/光纤/电源线…）。
+   * 此前 manualWire 把线缆类型硬编码成 'cat6'，左侧面板也没有任何线种入口，
+   * 图纸上根本选不了线。由左侧「布线材料」区点击/拖拽写入，画布布线时读取。
+   */
+  const activeCableType = ref<CableType>('cat6');
+  function setCableType(type: CableType) {
+    activeCableType.value = type;
+  }
   /**
    * 侧栏折叠状态（单一事实源）。
    * 此前 ProjectHeader 的折叠按钮翻的是组件私有 ref，无人消费 ⇒ 按了没反应；
@@ -82,6 +92,12 @@ export const useUiStore = defineStore('ui', () => {
     showTour.value = false;
   }
 
+  /** 切到布线工具并锁定线种：左侧面板「布线材料」区的统一入口 */
+  function startWiring(type: CableType) {
+    activeCableType.value = type;
+    activeTool.value = 'wire';
+  }
+
   function toggleSidebar() {
     sidebarCollapsed.value = !sidebarCollapsed.value;
   }
@@ -89,6 +105,9 @@ export const useUiStore = defineStore('ui', () => {
   return {
     activeTool,
     activeSidebarTab,
+    activeCableType,
+    setCableType,
+    startWiring,
     showTour,
     sidebarCollapsed,
     canvasSelectAll,

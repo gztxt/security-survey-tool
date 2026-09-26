@@ -109,6 +109,8 @@ export const NAV_ITEMS: NavItem[] = [
 export const COMMON_DEVICE_KEYWORDS: string[] = [
   '枪机', '半球', '球机', '摄像头', '摄像机', '机柜', 'rack',
   '交换机', 'switch', '录像机', 'nvr',
+  // AP：勘点常见"无线覆盖"需求，此前精简态下左侧面板看不到任何 AP
+  '无线', 'ap', 'wifi',
 ];
 
 /**

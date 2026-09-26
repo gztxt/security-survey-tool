@@ -99,7 +99,23 @@ function getCategoryIcon(category: string | undefined) {
       h('circle', { cx: 16.5, cy: 4.5, r: 0.6, fill: 'currentColor' }),
       h('circle', { cx: 16.5, cy: 9.5, r: 0.6, fill: 'currentColor' }),
     ]),
-    door_station: () => icons.access ? icons.access() : icons.default(),
+    // 门口机：门体 + 摄像头（可视对讲），与"门禁读头"区分开
+    door_station: () => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2' }, [
+      h('rect', { x: 5, y: 2, width: 14, height: 20, rx: 2 }),
+      h('circle', { cx: 12, cy: 8, r: 2 }),
+      h('path', { d: 'M9 14h6M9 18h6' }),
+    ]),
+    // 无线 AP：机体 + 三道同心信号弧
+    ap: () => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2' }, [
+      h('rect', { x: 6, y: 12, width: 12, height: 7, rx: 1.5 }),
+      h('circle', { cx: 12, cy: 15.5, r: 0.8, fill: 'currentColor' }),
+      h('path', { d: 'M8.5 9a5 5 0 0 1 7 0' }),
+      h('path', { d: 'M5.5 6a9 9 0 0 1 13 0' }),
+    ]),
+    // 光纤/网线：双箭头 + 中部线缆
+    cable: () => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2' }, [
+      h('path', { d: 'M2 12h20M2 12l4 4M2 12l4-4M22 12l-4 4M22 12l-4-4' }),
+    ]),
   };
 
   // 真实 DeviceCategory → 图标别名映射（dome/bullet/ptz… 与 legacy camera 键共存）
@@ -107,6 +123,7 @@ function getCategoryIcon(category: string | undefined) {
     dome: 'camera', bullet: 'camera', ptz: 'camera', panoramic: 'camera',
     thermal: 'sensor', multi: 'camera', fisheye: 'camera',
     nvr: 'nvr', switch: 'switch', rack: 'rack', door_station: 'door_station',
+    ap: 'ap', other: 'default',
   };
   const key = category ? (alias[category] || category) : '';
   return (icons as any)[key] || icons.default;
