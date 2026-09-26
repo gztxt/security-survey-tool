@@ -1,0 +1,45 @@
+/**
+ * 临时诊断：在 jsdom（有 DOM）环境下复现导出풍的比较路径，取完整堆栈。用完即删。
+ */
+import { describe, it } from 'vitest';
+import fs from 'fs';
+import { Exporter } from '@security-survey/exporter';
+
+const TINY =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+describe('repro-dom', () => {
+  it('jsdom 下复跑真实 survey 点位图导出', async () => {
+    const marker = '/tmp/am-smoke-files/current-survey-path.txt';
+    const surveyPath = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').trim() : '';
+    if (!surveyPath || !fs.existsSync(surveyPath)) return;
+    const raw = JSON.parse(fs.readFileSync(surveyPath, 'utf8'));
+    const project = raw.drawings ? raw : raw.project;
+
+    console.log('[repro-dom] typeof document =', typeof document);
+    const probe = document.createElement('canvas');
+    console.log('[repro-dom] getContext2d =', probe.getContext ? String(!!probe.getContext('2d')) : 'n/a');
+
+    const ex = new Exporter(project, []);
+    const drawingIds = (project.drawings || []).map((d: any) => d.id);
+    const canvasSnapshots: Record<string, any> = {};
+    for (const id of drawingIds) canvasSnapshots[id] = { dataUrl: TINY, mmPerPx: 10, widthPx: 800, heightPx: 600 };
+
+    try {
+      const res = await ex.export({
+        project,
+        drawingIds,
+        formats: ['png'],
+        resolution: 300,
+        outputDir: '',
+        include: { pointMap: true, fovMap: false, topology: false, deviceList: false, cableList: false, report: false },
+        canvasSnapshots,
+      } as any);
+      console.log('[repro-dom] success=', res.success, 'files=', res.files.map((f: any) => f.format + ':' + f.path).join(','));
+      console.log('[repro-dom] errors=', res.errors.join(' | '));
+    } catch (e: any) {
+      console.log('[repro-dom] THROWN:', e.message);
+      console.log('[repro-dom] STACK:\n' + e.stack);
+    }
+  });
+});

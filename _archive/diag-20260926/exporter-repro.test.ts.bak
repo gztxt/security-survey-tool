@@ -1,0 +1,50 @@
+/**
+ * 临时诊断用例：用真机冒烟落盘的真实 .survey 复跑导出，拿到完整堆栈。
+ * 用完即删。
+ */
+import { describe, it } from 'vitest';
+import fs from 'fs';
+import { Exporter } from './index';
+
+const TINY =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+describe('repro', () => {
+  it('真实 survey 数据复跑点位图导出', async () => {
+    const marker = '/tmp/am-smoke-files/current-survey-path.txt';
+    const surveyPath = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').trim() : '';
+    console.log('[repro] surveyPath=', surveyPath, 'exists=', surveyPath && fs.existsSync(surveyPath));
+    if (!surveyPath || !fs.existsSync(surveyPath)) {
+      console.log('[repro] 无真实 survey 文件，跳过');
+      return;
+    }
+    const raw = JSON.parse(fs.readFileSync(surveyPath, 'utf8'));
+    const project = raw.drawings ? raw : raw.project;
+    console.log('[repro] project keys=', Object.keys(project || {}).join(','));
+    console.log('[repro] drawings=', (project.drawings || []).length);
+
+    const ex = new Exporter(project, []);
+    const drawingIds = (project.drawings || []).map((d: any) => d.id);
+    const canvasSnapshots: Record<string, any> = {};
+    for (const id of drawingIds) {
+      canvasSnapshots[id] = { dataUrl: TINY, mmPerPx: 10, widthPx: 800, heightPx: 600 };
+    }
+
+    try {
+      const res = await ex.export({
+        project,
+        drawingIds,
+        formats: ['png'],
+        resolution: 300,
+        outputDir: '',
+        include: { pointMap: true, fovMap: false, topology: false, deviceList: false, cableList: false, report: false },
+        canvasSnapshots,
+      } as any);
+      console.log('[repro] success=', res.success, 'files=', res.files.map((f: any) => f.format + ':' + f.path).join(','));
+      console.log('[repro] errors=', res.errors.join(' | '));
+    } catch (e: any) {
+      console.log('[repro] THROWN:', e.message);
+      console.log('[repro] STACK:\n' + e.stack);
+    }
+  });
+});
